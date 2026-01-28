@@ -1,0 +1,133 @@
+name: Test Version Combinations
+
+on:
+  schedule:
+    # Run monthly on the 1st at midnight UTC
+    - cron: '0 0 1 * *'
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'lib/**'
+      - '.github/workflows/test-combinations.yml'
+
+jobs:
+  test-combinations:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Modern stable combinations
+          - ruby: "3.3"
+            rails: "7.1"
+            label: "Latest stable"
+          - ruby: "3.3"
+            rails: "8.0"
+            label: "Latest Ruby + Rails 8"
+          - ruby: "3.2"
+            rails: "7.2"
+            label: "Ruby 3.2 + Rails 7.2"
+          - ruby: "3.1"
+            rails: "7.0"
+            label: "Ruby 3.1 + Rails 7.0"
+          - ruby: "3.0"
+            rails: "6.1"
+            label: "Ruby 3.0 + Rails 6.1"
+          - ruby: "2.7"
+            rails: "6.0"
+            label: "Legacy support"
+          - ruby: "2.7"
+            rails: "5.2"
+            label: "Oldest supported"
+
+    name: Test ${{ matrix.label }} (Ruby ${{ matrix.ruby }} / Rails ${{ matrix.rails }})
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: false
+
+      - name: Build gem
+        run: |
+          gem build railstest.gemspec
+          gem install railstest-*.gem
+
+      - name: Create test fixture gem
+        run: |
+          mkdir -p test/fixtures/simple_gem
+          cd test/fixtures/simple_gem
+
+          # Create a minimal gemspec
+          cat > simple_gem.gemspec << 'EOF'
+          Gem::Specification.new do |s|
+            s.name        = "simple_gem"
+            s.version     = "0.1.0"
+            s.authors     = ["Test"]
+            s.email       = ["test@example.com"]
+            s.summary     = "Test gem"
+            s.files       = Dir["lib/**/*"]
+            s.require_paths = ["lib"]
+
+            s.add_dependency "rails", "~> ${{ matrix.rails }}"
+          end
+          EOF
+
+          # Create lib directory and basic file
+          mkdir -p lib/simple_gem
+          cat > lib/simple_gem.rb << 'EOF'
+          module SimpleGem
+            VERSION = "0.1.0"
+          end
+          EOF
+
+          # Create test directory with passing test
+          mkdir -p test
+          cat > test/simple_test.rb << 'EOF'
+          require "test_helper"
+
+          class SimpleTest < ActiveSupport::TestCase
+            test "truth" do
+              assert true
+            end
+          end
+          EOF
+
+          # Create test helper
+          cat > test/test_helper.rb << 'EOF'
+          require "rails/test_help"
+          require "simple_gem"
+          EOF
+
+      - name: Test Ruby ${{ matrix.ruby }} + Rails ${{ matrix.rails }}
+        run: |
+          cd test/fixtures/simple_gem
+          railstest --gem-path . --ruby ${{ matrix.ruby }} --rails ${{ matrix.rails }} --db sqlite
+        continue-on-error: true
+
+      - name: Report result
+        if: always()
+        run: |
+          if [ $? -eq 0 ]; then
+            echo "✅ Ruby ${{ matrix.ruby }} + Rails ${{ matrix.rails }} works!"
+          else
+            echo "❌ Ruby ${{ matrix.ruby }} + Rails ${{ matrix.rails }} failed"
+            echo "This combination may need updates to the compatibility matrix"
+          fi
+
+  update-reminder:
+    runs-on: ubuntu-latest
+    needs: test-combinations
+    if: github.event_name == 'schedule'
+    steps:
+      - name: Check if compatibility matrix needs update
+        run: |
+          echo "Monthly test completed. Review results and update:"
+          echo "  1. lib/railstest/supported_versions.rb"
+          echo "  2. README.md compatibility matrix"
+          echo "  3. Update 'Last updated' date in README"

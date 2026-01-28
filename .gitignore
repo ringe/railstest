@@ -1,0 +1,15 @@
+*.gem
+*.rbc
+.bundle/
+.config
+.claude
+coverage/
+InstalledFiles
+lib/bundler/man/
+pkg/
+spec/reports/
+test/tmp/
+test/version_tmp/
+tmp/
+.byebug_history
+Gemfile.lock
