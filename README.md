@@ -1,6 +1,6 @@
 # Railstest
 
-A Docker-based CLI tool for testing Rails gems with various Ruby, Rails, and database combinations.
+A Docker-based CLI tool for testing Ruby gems. Runs tests on various Ruby, Rails, and database combinations.
 
 ## Features
 
@@ -11,6 +11,15 @@ A Docker-based CLI tool for testing Rails gems with various Ruby, Rails, and dat
 - **Test framework detection**: Automatically detects RSpec or Rails test
 - **Docker isolation**: Reproducible tests in clean environments
 - **Zero runtime dependencies**: Just Docker required
+
+### CLI Options
+- `--ruby VERSION` - Specify Ruby version
+- `--rails VERSION` - Specify Rails version (accepts 7.1 or 7_1 format)
+- `--db DATABASE` - Choose database (sqlite, mysql, postgres)
+- `--path PATH` - Run specific test file or directory
+- `--gem-path PATH` - Enable target-gem mode
+- `--version` - Show version
+- `--help` - Show help
 
 ## Installation
 
@@ -38,7 +47,7 @@ railstest              # Auto-detects versions from .ruby-version and gemfiles/
 
 **Target-Gem Mode** - For simple gems without `gemfiles/` directory:
 ```bash
-railstest --gem-path /path/to/gem --ruby 3.3 --rails 7.1
+railstest --gem-path /path/to/gem --ruby 4.0 --rails 8.1
 ```
 
 ### Basic Commands
@@ -126,25 +135,28 @@ railstest --path test/specific_test.rb # Run specific test file
 
 ## Supported Versions
 
-### Ruby & Rails Compatibility Matrix
+### What Versions Can Railstest Test?
 
-| Ruby Version | Supported Rails Versions | Status | Notes |
-|--------------|-------------------------|--------|-------|
-| 3.3 | 7.1, 7.2, 8.0, 8.1 | ✅ Recommended | Current stable |
-| 3.2 | 7.0, 7.1, 7.2, 8.0 | ✅ Stable | Good choice for most projects |
-| 3.1 | 7.0, 7.1, 7.2 | ✅ Stable | Well-supported |
-| 3.0 | 6.1, 7.0, 7.1 | ✅ Stable | Older stable release |
-| 2.7 | 5.2, 6.0, 6.1, 7.0, 7.1 | ⚠️ Maintenance | Good for legacy projects |
-| 2.6 | 5.2, 6.0, 6.1 | ⚠️ Limited | Old Docker images |
-| 2.5 | 5.2, 6.0 | ⚠️ Limited | Old Docker images |
+**Railstest will test your gem with any Ruby and Rails versions you specify.** It uses Docker to provide the test environment, so you can test with any Ruby that still builds. Any Rails, or any combination your gem supports.
 
-**Notes:**
-- Rails 8.0+ requires Ruby 3.1 or higher
-- Ruby 2.5-2.6 have limited Docker support (older Debian base images)
-- Ruby < 2.5 is not supported (EOL operating systems in Docker images)
-- The tool will warn you about known incompatible combinations
+If railstest cannot auto-detect versions from your gem's `.ruby-version`, `Gemfile`, or gemspec, it will prompt you to specify them with `--ruby` and `--rails` flags.
 
-**Last updated:** 2026-01-28
+### Self-Test Compatibility Matrix
+
+Railstest tests itself using these combinations (see `gemfiles/`):
+
+| Ruby | Rails Versions |
+|------|---------------|
+| 4.0  | 7.1, 7.2, 8.0, 8.1 |
+| 3.4  | 7.1, 7.2, 8.0, 8.1 |
+| 3.3  | 7.0, 7.1, 7.2, 8.0, 8.1 |
+| 3.2  | 7.0, 7.1, 7.2, 8.0, 8.1 |
+| 3.1  | 7.0, 7.1, 7.2 |
+
+**Self-test version policy:**
+- Use latest stable patch of each major.minor (e.g., 3.3.x → 3.3.7, Rails 8.0.x → 8.0.4)
+- Pin dependencies minimally - only when needed to resolve conflicts
+- See `gemfiles/README.md` for exact versions used
 
 ## How It Works
 
@@ -198,13 +210,27 @@ cd /path/to/test-gem
 railstest
 ```
 
+## Self-Testing
+
+Railstest tests itself using the `gemfiles/` directory:
+
+```bash
+./run_self_test.sh                    # Stop on first failure
+./run_self_test.sh --continue-on-error # Test all combinations
+./run_self_test.sh -i                 # Interactive mode
+```
+
+The test discovers gemfiles automatically and tests each with Ruby versions listed in `gemfiles/ruby-versions`.
+
 ## Contributing
 
 When adding new Ruby or Rails versions:
-1. Update `lib/railstest/supported_versions.rb`
-2. Update the compatibility matrix in this README
-3. Update the "Last updated" date
-4. See `VERSION_COMPATIBILITY.md` for details
+1. Create a new gemfile in `gemfiles/` with pinned versions
+2. Test with `./run_self_test.sh`
+3. Update `lib/railstest/supported_versions.rb` after verification
+4. Update the compatibility matrix in this README
+5. Update the "Last updated" date
+6. See `VERSION_COMPATIBILITY.md` for details
 
 ## Expected Behavior
 
