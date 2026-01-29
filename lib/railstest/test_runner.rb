@@ -142,13 +142,16 @@ module Railstest
       # Returns an array of command parts for local mode
       case test_framework
       when :rspec
-        # ENTRYPOINT is overridden, use full command
         cmd = ["bundle", "exec", "rspec"]
         cmd << options[:test_path] if options[:test_path]
         cmd
       when :rails_test
-        # ENTRYPOINT is ["bin/rails"], just pass "test" command
-        cmd = ["test"]
+        # Check if bin/rails exists, otherwise use bundle exec rails
+        if File.exist?("bin/rails")
+          cmd = ["bin/rails", "test"]
+        else
+          cmd = ["bundle", "exec", "rails", "test"]
+        end
         cmd << options[:test_path] if options[:test_path]
         cmd
       end

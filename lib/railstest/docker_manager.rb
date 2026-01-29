@@ -202,8 +202,10 @@ module Railstest
             echo "gem 'mysql2', '~> 0.5'" >> Gemfile && \\
             echo "gem 'pg', '~> 1.1'" >> Gemfile
 
-        # Add target gem to Gemfile (gem will be mounted at runtime)
-        RUN echo "gem '${TARGET_GEM_NAME}', path: '/app/target_gem'" >> Gemfile
+        # Remove existing gem entry if present, then add target gem with path
+        # (handles case where gem is already a Rails dependency)
+        RUN sed -i "/gem ['\\\"]${TARGET_GEM_NAME}['\\\"]/d" Gemfile && \\
+            echo "gem '${TARGET_GEM_NAME}', path: '/app/target_gem'" >> Gemfile
 
         # Note: bundle install will run at runtime after gem is mounted
       DOCKERFILE
