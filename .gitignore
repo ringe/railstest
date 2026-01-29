@@ -13,3 +13,4 @@ test/version_tmp/
 tmp/
 .byebug_history
 Gemfile.lock
+mise.toml

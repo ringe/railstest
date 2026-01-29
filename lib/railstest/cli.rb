@@ -22,7 +22,7 @@ module Railstest
       }
 
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: railstest [options]"
+        opts.banner = "Railstest CLI\nUsage: railstest [options]"
         opts.separator ""
         opts.separator "Options:"
 
@@ -64,6 +64,14 @@ module Railstest
       # Auto-detect versions if not specified
       detect_versions!(options)
 
+      # Print header with slogan (before validation so it always shows)
+      gem_name = detect_gem_name(options[:gem_path] || Dir.pwd)
+      if options[:rails_version]
+        puts "\nRailstest pondering if #{gem_name} runs on Rails #{options[:rails_version]}...\n"
+      else
+        puts "\nRailstest pondering if #{gem_name} runs on Rails...\n"
+      end
+
       # Validate required options
       validate_options!(options)
 
@@ -94,6 +102,26 @@ module Railstest
       if options[:rails_version].nil?
         options[:rails_version] = detect_rails_version(base_path)
       end
+    end
+
+    def detect_gem_name(base_path)
+      gemspec_files = Dir.glob(File.join(base_path, "*.gemspec"))
+
+      if gemspec_files.empty?
+        # Fallback to directory name if no gemspec found
+        return File.basename(File.expand_path(base_path))
+      end
+
+      gemspec_file = gemspec_files.first
+      content = File.read(gemspec_file)
+
+      # Try to match spec.name = "gem_name" or s.name = 'gem_name'
+      if content =~ /\w+\.name\s*=\s*["']([^"']+)["']/
+        return $1
+      end
+
+      # Fallback to filename without extension
+      File.basename(gemspec_file, ".gemspec")
     end
 
     def detect_ruby_version(base_path)

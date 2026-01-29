@@ -48,12 +48,10 @@ module Railstest
     SUPPORTED_VERSIONS[:notes][major_minor]
   end
 
-  private
-
   def self.normalize_version(version)
     # Convert "3.3.0" or "3.3" to "3.3"
     version.to_s.match(/^(\d+\.\d+)/)[1]
-  rescue
+  rescue NoMethodError
     version.to_s
   end
 end
