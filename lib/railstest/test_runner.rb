@@ -16,6 +16,9 @@ module Railstest
       # Setup signal handlers for graceful cleanup on Ctrl+C
       setup_signal_handlers
 
+      # Validate that tests exist before building Docker image
+      validate_tests_exist!
+
       docker_manager.build_image
       database_manager.start
 
@@ -29,6 +32,50 @@ module Railstest
     end
 
     private
+
+    def validate_tests_exist!
+      gem_path = if docker_manager.target_gem_mode?
+                   docker_manager.expanded_gem_path
+                 else
+                   Dir.pwd
+                 end
+
+      # Check for test or spec directories
+      test_dir = File.join(gem_path, "test")
+      spec_dir = File.join(gem_path, "spec")
+
+      has_test_dir = File.directory?(test_dir)
+      has_spec_dir = File.directory?(spec_dir)
+
+      unless has_test_dir || has_spec_dir
+        raise Railstest::Error, <<~ERROR
+          No test directory found in gem.
+
+          Railstest requires either a 'test/' or 'spec/' directory with tests.
+
+          Gem path: #{gem_path}
+        ERROR
+      end
+
+      # Check if the directories actually contain test files
+      test_files = []
+      test_files += Dir.glob(File.join(test_dir, "**/*_test.rb")) if has_test_dir
+      test_files += Dir.glob(File.join(spec_dir, "**/*_spec.rb")) if has_spec_dir
+
+      if test_files.empty?
+        raise Railstest::Error, <<~ERROR
+          No test files found in gem.
+
+          Found directories:
+          #{has_test_dir ? "  - test/" : ""}
+          #{has_spec_dir ? "  - spec/" : ""}
+
+          But no test files (*_test.rb or *_spec.rb) were found.
+
+          Gem path: #{gem_path}
+        ERROR
+      end
+    end
 
     def setup_signal_handlers
       # Trap SIGINT (Ctrl+C) and SIGTERM to ensure cleanup
