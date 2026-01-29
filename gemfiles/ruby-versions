@@ -1,0 +1,6 @@
+# Supported Ruby versions for testing
+# One version per line
+3.2
+3.3
+3.4
+4.0

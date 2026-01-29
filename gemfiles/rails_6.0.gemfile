@@ -1,0 +1,20 @@
+# Rails 6.0 - UNSUPPORTED
+#
+# Rails 6.0.6 (latest 6.0.x) has ActiveSupport::LoggerThreadSafeLevel bug
+# that requires Ruby < 2.6, but Ruby 2.5 uses EOL Debian with broken repos.
+#
+# This combination cannot be supported following our version policy:
+# - Latest Rails 6.0.x (6.0.6) requires Ruby < 2.6
+# - Ruby 2.5 and older have EOL Docker base images
+
+source "https://rubygems.org"
+
+gem "rails", "~> 6.0.6"  # Latest 6.0.x (broken with modern Ruby)
+
+gem "sqlite3", "~> 1.4.0"
+gem "nokogiri", "~> 1.13.0"
+gem "rspec-rails", "~> 5.0"
+
+group :development, :test do
+  gem "byebug"
+end

@@ -1,0 +1,20 @@
+# Rails 7.0 - Latest 7.0.x
+# Ruby: >= 3.1
+
+source "https://rubygems.org"
+
+gem "rails", "~> 7.0.8"
+gem "sqlite3", "~> 1.4"
+
+# Pin nokogiri to avoid Ruby version conflicts
+gem "nokogiri", "~> 1.15.0"
+
+# Pin minitest - Rails 7.0 incompatible with minitest 6.0
+gem "minitest", "~> 5.27"
+
+# Test framework
+gem "rspec-rails", "~> 6.0"
+
+group :development, :test do
+  gem "debug"
+end
