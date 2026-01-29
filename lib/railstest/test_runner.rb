@@ -104,13 +104,10 @@ module Railstest
         cmd << "-v" << "#{docker_manager.expanded_gem_path}:/app/target_gem"
         cmd << "-w" << "/app/test_app"
       else
-        cmd << "-e" << "BUNDLE_GEMFILE=/app/gemfiles/rails_#{docker_manager.rails_version_for_gemfile}.gemfile"
+        # Local mode: use actual gemfile found in gemfiles/
+        gemfile = docker_manager.find_gemfile_for_version
+        cmd << "-e" << "BUNDLE_GEMFILE=/app/gemfiles/#{gemfile}"
         cmd << "-w" << "/app"
-
-        # For RSpec in local mode, override ENTRYPOINT
-        if test_framework == :rspec
-          cmd << "--entrypoint" << ""
-        end
       end
 
       cmd << docker_manager.image_name

@@ -27,11 +27,11 @@ module Railstest
 
         if target_gem_mode?
           build_args << "--build-arg" << "TARGET_GEM_NAME=#{target_gem_name}"
-          # Target-gem mode uses dotted version for gem install
           build_args << "--build-arg" << "RAILS_VERSION=#{rails_version}"
         else
-          # Local mode uses underscored version for gemfile paths
-          build_args << "--build-arg" << "RAILS_VERSION=#{rails_version_for_gemfile}"
+          # Local mode: find actual gemfile and pass it
+          gemfile = find_gemfile_for_version
+          build_args << "--build-arg" << "GEMFILE_PATH=gemfiles/#{gemfile}"
         end
 
         success = system(
@@ -91,6 +91,34 @@ module Railstest
       rails_version.tr('.', '_')
     end
 
+    def find_gemfile_for_version
+      # Find actual gemfile in gemfiles/ directory that matches the Rails version
+      # Handles various naming conventions: rails_7.0.gemfile, Gemfile.rails-5.2-rc1, etc.
+      return nil if target_gem_mode?
+
+      gemfiles_dir = "gemfiles"
+      return nil unless File.directory?(gemfiles_dir)
+
+      # Look for any file containing the version pattern, exclude lock files
+      matching_files = Dir.glob(File.join(gemfiles_dir, "*")).select do |f|
+        basename = File.basename(f)
+        basename =~ /#{Regexp.escape(rails_version)}/ && basename !~ /\.lock$/
+      end
+
+      if matching_files.empty?
+        raise Error, "No gemfile found in gemfiles/ for Rails #{rails_version}"
+      end
+
+      if matching_files.length > 1
+        # Prefer exact patterns, warn about multiple matches
+        puts "⚠️  Warning: Multiple gemfiles found for Rails #{rails_version}:"
+        matching_files.each { |f| puts "   - #{File.basename(f)}" }
+        puts "   Using: #{File.basename(matching_files.first)}"
+      end
+
+      File.basename(matching_files.first)
+    end
+
     private
 
     def validate_docker!
@@ -103,6 +131,21 @@ module Railstest
       expanded = File.expand_path(gem_path)
       unless File.directory?(expanded)
         raise Error, "Gem path does not exist: #{expanded}"
+      end
+
+      # Check if gem has gemfiles/ directory - should use local mode instead
+      gemfiles_dir = File.join(expanded, "gemfiles")
+      if File.directory?(gemfiles_dir)
+        raise Error, <<~ERROR
+          This gem has a 'gemfiles/' directory and should be tested in local mode.
+
+          Instead of:
+            railstest --gem-path #{gem_path}
+
+          Use local mode by running from the gem directory:
+            cd #{gem_path}
+            railstest
+        ERROR
       end
     end
 
@@ -173,16 +216,17 @@ module Railstest
         ARG RUBY_VERSION=3.3
         FROM ruby:$RUBY_VERSION
 
-        ARG RAILS_VERSION
+        ARG GEMFILE_PATH
 
         RUN apt-get update -qq && apt-get install -y build-essential
 
         WORKDIR /app
         COPY . .
 
-        RUN BUNDLE_GEMFILE="gemfiles/rails_${RAILS_VERSION}.gemfile" bundle install
+        # Use the actual gemfile found in gemfiles/ directory
+        RUN BUNDLE_GEMFILE="${GEMFILE_PATH}" bundle install
 
-        ENTRYPOINT ["bin/rails"]
+        # No ENTRYPOINT - commands will be passed directly to docker run
       DOCKERFILE
     end
   end

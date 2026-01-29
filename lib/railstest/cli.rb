@@ -177,16 +177,26 @@ module Railstest
       # First check for gemfiles/ directory (local mode)
       gemfiles_dir = File.join(base_path, "gemfiles")
       if File.directory?(gemfiles_dir)
-        # Find the newest Rails version from gemfiles (skip rails_main.gemfile)
-        gemfiles = Dir.glob(File.join(gemfiles_dir, "rails_*.gemfile"))
+        # Find all files in gemfiles/ and extract version patterns
+        gemfiles = Dir.glob(File.join(gemfiles_dir, "*"))
         unless gemfiles.empty?
-          # Extract versions and pick the newest (exclude main/edge versions)
+          # Extract versions from any filename pattern containing major.minor
+          # Matches: rails_7.0.gemfile, Gemfile.rails-5.2-rc1, rails-7.1.gemfile, etc.
           versions = gemfiles.map do |f|
-            if f =~ /rails_(\d+_\d+)\.gemfile$/
-              $1.tr('_', '.')
+            filename = File.basename(f)
+            # Look for version pattern: digits.digits (e.g., 7.0, 5.2)
+            # Exclude 'main', 'edge', 'master' versions
+            if filename =~ /(\d+\.\d+)/ && filename !~ /(main|edge|master)/i
+              $1
             end
-          end.compact.sort_by { |v| v.split('.').map(&:to_i) }
-          return versions.last unless versions.empty?
+          end.compact.uniq.sort_by { |v| v.split('.').map(&:to_i) }
+
+          if versions.empty?
+            puts "⚠️  Warning: No Rails version patterns (e.g., 5.2, 7.0) found in gemfiles/"
+            puts "   Found files: #{Dir.glob(File.join(gemfiles_dir, "*")).map { |f| File.basename(f) }.join(", ")}"
+          else
+            return versions.last
+          end
         end
       end
 
