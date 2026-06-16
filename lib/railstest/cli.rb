@@ -16,7 +16,7 @@ module Railstest
       options = {
         ruby_version: nil,
         rails_version: nil,
-        database: 'sqlite',
+        database: nil,
         test_path: nil,
         gem_path: nil,
         workers: 1,
@@ -129,7 +129,8 @@ module Railstest
       results = {}
       bin = File.expand_path($PROGRAM_NAME)
       gem_path = File.expand_path(options[:gem_path] || Dir.pwd)
-      base_args = ['--gem-path', gem_path, '--db', options[:database] || 'sqlite']
+      base_args = ['--gem-path', gem_path]
+      base_args += ['--db', options[:database]] if options[:database]
       base_args += ['--path', options[:test_path]] if options[:test_path]
 
       threads = workers.times.map do

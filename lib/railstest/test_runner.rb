@@ -10,7 +10,8 @@ module Railstest
       @docker_manager = DockerManager.new(
         ruby_version: options[:ruby_version],
         rails_version: options[:rails_version],
-        gem_path: options[:gem_path]
+        gem_path: options[:gem_path],
+        database: options[:database]
       )
       @database_manager = DatabaseManager.new(database: options[:database])
     end

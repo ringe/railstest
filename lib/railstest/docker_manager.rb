@@ -5,12 +5,13 @@ require 'fileutils'
 
 module Railstest
   class DockerManager
-    attr_reader :ruby_version, :rails_version, :gem_path
+    attr_reader :ruby_version, :rails_version, :gem_path, :database
 
-    def initialize(ruby_version:, rails_version:, gem_path: nil)
+    def initialize(ruby_version:, rails_version:, gem_path: nil, database: nil)
       @ruby_version = ruby_version
       @rails_version = rails_version
       @gem_path = gem_path
+      @database = database
       @target_gem_name = nil
       validate_docker!
       validate_gem_path! if target_gem_mode?
@@ -128,6 +129,20 @@ module Railstest
 
     private
 
+    # Returns the Dockerfile RUN lines needed to install the requested database adapter,
+    # stripping any existing declaration first to avoid version conflicts.
+    # Returns an empty string when no --db was specified (gem's own Gemfile is used as-is).
+    def adapter_setup
+      return '' unless database
+
+      gem_name, version, sed_pattern = case database.to_s
+                                        when 'mysql'    then ['mysql2',  '~> 0.5', '/mysql2/d']
+                                        when 'postgres' then ['pg',      '~> 1.1', "/'pg'/d; /\\\"pg\\\"/d"]
+                                        else                 ['sqlite3', '~> 2.1', '/sqlite3/d']
+                                        end
+      "RUN sed -i \"#{sed_pattern}\" Gemfile\nRUN echo \"gem '#{gem_name}', '#{version}'\" >> Gemfile"
+    end
+
     def validate_docker!
       return if system('docker --version > /dev/null 2>&1')
 
@@ -199,15 +214,10 @@ module Railstest
           # Copy all gem files
           COPY . .
 
-          # Remove sqlite3 from lock file, add all database adapters to Gemfile#{'  '}
           RUN rm -f Gemfile.lock
-          RUN grep -v sqlite3 Gemfile > tmp && mv tmp Gemfile
-          RUN echo "gem 'sqlite3', '~> 2.1'" >> Gemfile
-          RUN echo "gem 'mysql2', '~> 0.5'" >> Gemfile
-          RUN echo "gem 'pg', '~> 1.1'" >> Gemfile
+          #{adapter_setup}
 
-          # Update bundler and install dependencies with new gems
-          RUN gem update --system && gem install bundler && bundle install
+          RUN gem update --system --quiet && gem install bundler --quiet --no-document && bundle install --quiet
         DOCKERFILE
       else
         # Regular Rails app or library - create new test app
@@ -226,23 +236,19 @@ module Railstest
 
           # Create a new Rails application to host the gem tests
           # Use full Rails (not minimal/api) since gem could extend any part of Rails
-          RUN gem install rails --version "~> ${RAILS_VERSION}.0" --no-document
+          RUN gem install rails --version "~> ${RAILS_VERSION}.0" --no-document --quiet
           RUN rails new test_app --skip-bundle
 
           WORKDIR /app/test_app
 
-          # Remove default sqlite3 gem and add all database adapters
-          RUN sed -i '/gem.*sqlite3/d' Gemfile && \
-              echo "gem 'sqlite3', '~> 1.4'" >> Gemfile && \
-              echo "gem 'mysql2', '~> 0.5'" >> Gemfile && \
-              echo "gem 'pg', '~> 1.1'" >> Gemfile
+          #{adapter_setup}
 
           # Remove existing gem entry if present, then add target gem with path
           RUN sed -i "/gem ['\"]${TARGET_GEM_NAME}['\"]/d" Gemfile && \
               echo "gem '${TARGET_GEM_NAME}', path: '/app/target_gem'" >> Gemfile
 
           # Install dependencies - this gets cached if Gemfile doesn't change
-          RUN bundle install
+          RUN bundle install --quiet
         DOCKERFILE
       end
     end
@@ -262,7 +268,7 @@ module Railstest
         COPY . .
 
         # Use the actual gemfile found in gemfiles/ directory
-        RUN BUNDLE_GEMFILE="${GEMFILE_PATH}" bundle install
+        RUN BUNDLE_GEMFILE="${GEMFILE_PATH}" bundle install --quiet
 
         # No ENTRYPOINT - commands will be passed directly to docker run
       DOCKERFILE

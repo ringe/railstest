@@ -39,7 +39,7 @@ module Railstest
     end
 
     def setup_database(docker_manager)
-      return if database == 'sqlite'
+      return unless requires_container?
 
       wait_for_ready
 
@@ -78,7 +78,7 @@ module Railstest
     end
 
     def requires_container?
-      database != 'sqlite'
+      database && database != 'sqlite'
     end
 
     private
