@@ -18,7 +18,9 @@ module Railstest
         rails_version: nil,
         database: 'sqlite',
         test_path: nil,
-        gem_path: nil
+        gem_path: nil,
+        workers: 1,
+        gemspec: false
       }
 
       parser = OptionParser.new do |opts|
@@ -26,11 +28,11 @@ module Railstest
         opts.separator ''
         opts.separator 'Options:'
 
-        opts.on('--ruby VERSION', 'Ruby version (auto-detected from .ruby-version)') do |v|
+        opts.on('--ruby VERSION', 'Ruby version filter (tests all compatible Rails when --rails omitted)') do |v|
           options[:ruby_version] = v
         end
 
-        opts.on('--rails VERSION', 'Rails version (auto-detected from Gemfile)') do |v|
+        opts.on('--rails VERSION', 'Rails version filter (tests all compatible Ruby when --ruby omitted)') do |v|
           options[:rails_version] = normalize_rails_version(v)
         end
 
@@ -42,8 +44,16 @@ module Railstest
           options[:test_path] = path
         end
 
-        opts.on('--gem-path PATH', 'Test an external gem (target-gem mode)') do |path|
+        opts.on('--gem-path PATH', 'Path to the gem to test') do |path|
           options[:gem_path] = path
+        end
+
+        opts.on('--gemspec', 'Show which combinations the gemspec claims to support (no Docker required)') do
+          options[:gemspec] = true
+        end
+
+        opts.on('-j N', '--workers N', Integer, 'Parallel workers (default: 1, sequential)') do |n|
+          options[:workers] = n
         end
 
         opts.separator ''
@@ -61,28 +71,20 @@ module Railstest
 
       parser.parse!(@args)
 
-      # Auto-detect versions if not specified
-      detect_versions!(options)
+      base_path = options[:gem_path] || Dir.pwd
+      gem_name = detect_gem_name(base_path)
 
-      # Print header with slogan (before validation so it always shows)
-      gem_name = detect_gem_name(options[:gem_path] || Dir.pwd)
-      if options[:rails_version]
-        puts "\nRailstest pondering if #{gem_name} runs on Rails #{options[:rails_version]}...\n"
-      else
-        puts "\nRailstest pondering if #{gem_name} runs on Rails...\n"
+      if options[:gemspec]
+        show_gemspec_matrix(options, gem_name)
+        return
       end
 
-      # Validate required options
-      validate_options!(options)
-
-      # Warn about compatibility issues
-      check_compatibility!(options)
-
-      puts "Running tests with Ruby #{options[:ruby_version]}, Rails #{options[:rails_version]}, #{options[:database]}"
-
-      runner = Railstest::TestRunner.new(options)
-      exit_status = runner.run
-      exit(exit_status)
+      # Single combination: both versions explicitly given
+      if options[:ruby_version] && options[:rails_version]
+        run_single(options, gem_name)
+      else
+        run_combinations(options, gem_name)
+      end
     rescue Railstest::Error => e
       puts "Error: #{e.message}"
       exit 1
@@ -90,13 +92,191 @@ module Railstest
 
     private
 
+    def run_single(options, gem_name)
+      detect_versions!(options)
+
+      puts "\nRailstest pondering if #{gem_name} runs on Rails #{options[:rails_version]}...\n"
+
+      validate_options!(options)
+      check_compatibility!(options)
+
+      puts "Running tests with Ruby #{options[:ruby_version]}, Rails #{options[:rails_version]}, #{options[:database]}"
+
+      runner = Railstest::TestRunner.new(options)
+      exit_status = runner.run
+      exit(exit_status)
+    end
+
+    def run_combinations(options, gem_name)
+      require 'open3'
+
+      workers = options[:workers]
+      combos = compatible_combinations(options)
+
+      if combos.empty?
+        puts 'No compatible combinations found for the specified constraints.'
+        exit 1
+      end
+
+      worker_label = workers == 1 ? 'sequentially' : "with #{workers} parallel workers"
+      puts "\nRailstest testing #{gem_name} against #{combos.length} " \
+           "combination#{'s' unless combos.length == 1} #{worker_label}...\n\n"
+
+      queue = Queue.new
+      combos.each { |c| queue << c }
+
+      mutex = Mutex.new
+      results = {}
+      bin = File.expand_path($PROGRAM_NAME)
+      gem_path = File.expand_path(options[:gem_path] || Dir.pwd)
+      base_args = ['--gem-path', gem_path, '--db', options[:database] || 'sqlite']
+      base_args += ['--path', options[:test_path]] if options[:test_path]
+
+      threads = workers.times.map do
+        Thread.new do
+          loop do
+            ruby, rails = queue.pop(true)
+            start = Time.now
+            output, status = Open3.capture2e(bin, *base_args, '--ruby', ruby, '--rails', rails)
+            elapsed = (Time.now - start).round
+            passed = status.exitstatus.zero?
+
+            mutex.synchronize do
+              results["#{ruby}+#{rails}"] = { passed: passed, ruby: ruby, rails: rails,
+                                              elapsed: elapsed, output: output }
+              puts "  #{passed ? '✅' : '❌'} Ruby #{ruby} + Rails #{rails} (#{elapsed}s)"
+            end
+          rescue ThreadError
+            break
+          end
+        end
+      end
+
+      threads.each(&:join)
+
+      failures = results.values.reject { |r| r[:passed] }
+      unless failures.empty?
+        puts "\nFailed combinations:\n"
+        failures.each do |r|
+          puts "  ❌ Ruby #{r[:ruby]} + Rails #{r[:rails]}"
+          puts r[:output].lines.map { |l| "    #{l}" }.join
+          puts
+        end
+      end
+
+      passed_count = results.values.count { |r| r[:passed] }
+      total = results.length
+      puts "\n#{'═' * 50}"
+      puts "#{passed_count}/#{total} combinations passed"
+
+      exit(passed_count == total ? 0 : 1)
+    end
+
+    def show_gemspec_matrix(options, gem_name)
+      base_path = File.expand_path(options[:gem_path] || Dir.pwd)
+      constraints = parse_gemspec_constraints(base_path)
+
+      if constraints.nil?
+        puts 'No gemspec found in the specified path.'
+        exit 1
+      end
+
+      ruby_req, rails_req = constraints[:ruby], constraints[:rails]
+      minimum = Railstest::SUPPORTED_VERSIONS[:ruby][:minimum]
+
+      puts "\n#{gem_name} — declared support (gemspec)\n"
+      puts '═' * 50
+      puts
+
+      if ruby_req
+        note = ruby_req.satisfied_by?(Gem::Version.new('3.1')) ? \
+               "  →  railstest tests >= #{minimum} (zeitwerk requires Ruby >= #{minimum})" : ''
+        puts "  ruby   #{ruby_req}#{note}"
+      end
+      puts "  rails  #{rails_req}" if rails_req
+      puts
+
+      compat = Railstest::SUPPORTED_VERSIONS[:compatibility]
+      all_rubies = compat.select { |_, rails_list| rails_list.any? }.keys
+      all_rails = compat.values.flatten.uniq.sort_by { |v| v.split('.').map(&:to_i) }
+
+      # Determine which cells are in-matrix and in-gemspec-scope
+      cell = lambda do |ruby, rails|
+        in_matrix = compat[ruby]&.include?(rails)
+        return :off unless in_matrix
+
+        ruby_ok = ruby_req.nil? || ruby_req.satisfied_by?(Gem::Version.new(ruby))
+        rails_ok = rails_req.nil? || rails_req.satisfied_by?(Gem::Version.new(rails))
+        ruby_ok && rails_ok ? :in : :out
+      end
+
+      col_w = 6
+      print '        '
+      all_rails.each { |r| print r.ljust(col_w) }
+      puts
+      print '  ──────'
+      puts '─' * (all_rails.length * col_w)
+
+      all_rubies.each do |ruby|
+        print "  #{ruby.ljust(6)}"
+        all_rails.each do |rails|
+          mark = case cell.call(ruby, rails)
+                 when :in  then '✓'
+                 when :out then '·'
+                 else ' '
+                 end
+          print mark.ljust(col_w)
+        end
+        puts
+      end
+
+      in_scope = all_rubies.sum { |rb| all_rails.count { |r| cell.call(rb, r) == :in } }
+      puts
+      puts "  ✓ in scope   · in railstest matrix but excluded by gemspec" if all_rubies.any? { |rb| all_rails.any? { |r| cell.call(rb, r) == :out } }
+      puts
+      puts "  #{in_scope} combination#{'s' unless in_scope == 1} in scope."
+      puts "  Run 'railstest --gem-path #{options[:gem_path] || '.'}' to test them."
+      puts
+    end
+
+    def parse_gemspec_constraints(base_path)
+      files = Dir.glob(File.join(base_path, '*.gemspec'))
+      return nil if files.empty?
+
+      content = File.read(files.first)
+
+      ruby_req = nil
+      if content =~ /required_ruby_version\s*=\s*["']([^"']+)["']/
+        ruby_req = Gem::Requirement.new(::Regexp.last_match(1))
+      end
+
+      rails_req = nil
+      if content =~ /add_(?:runtime_)?dependency\s+["']rails["']([^\n]+)/
+        req_strings = ::Regexp.last_match(1).scan(/["']([^"']+)["']/).flatten
+        rails_req = Gem::Requirement.new(*req_strings) unless req_strings.empty?
+      end
+
+      { ruby: ruby_req, rails: rails_req }
+    end
+
+    def compatible_combinations(options)
+      ruby_filter = options[:ruby_version] ? Railstest.normalize_version(options[:ruby_version]) : nil
+      rails_filter = options[:rails_version] ? Railstest.normalize_version(options[:rails_version]) : nil
+
+      Railstest::SUPPORTED_VERSIONS[:compatibility].flat_map do |ruby, rails_list|
+        next [] if ruby_filter && Railstest.normalize_version(ruby) != ruby_filter
+
+        rails_list.filter_map do |rails|
+          next if rails_filter && Railstest.normalize_version(rails) != rails_filter
+
+          [ruby, rails]
+        end
+      end
+    end
+
     def detect_versions!(options)
       base_path = options[:gem_path] || Dir.pwd
-
-      # Auto-detect Ruby version from .ruby-version
       options[:ruby_version] = detect_ruby_version(base_path) if options[:ruby_version].nil?
-
-      # Auto-detect Rails version from Gemfile or gemfiles/
       return unless options[:rails_version].nil?
 
       options[:rails_version] = detect_rails_version(base_path)
@@ -104,56 +284,31 @@ module Railstest
 
     def detect_gem_name(base_path)
       gemspec_files = Dir.glob(File.join(base_path, '*.gemspec'))
+      return File.basename(File.expand_path(base_path)) if gemspec_files.empty?
 
-      if gemspec_files.empty?
-        # Fallback to directory name if no gemspec found
-        return File.basename(File.expand_path(base_path))
-      end
-
-      gemspec_file = gemspec_files.first
-      content = File.read(gemspec_file)
-
-      # Try to match spec.name = "gem_name" or s.name = 'gem_name'
+      content = File.read(gemspec_files.first)
       return ::Regexp.last_match(1) if content =~ /\w+\.name\s*=\s*["']([^"']+)["']/
 
-      # Fallback to filename without extension
-      File.basename(gemspec_file, '.gemspec')
+      File.basename(gemspec_files.first, '.gemspec')
     end
 
     def detect_ruby_version(base_path)
-      # First check .ruby-version file
       ruby_version_file = File.join(base_path, '.ruby-version')
 
       if File.exist?(ruby_version_file)
-        version = File.read(ruby_version_file).strip
-        # Remove 'ruby-' prefix if present (e.g., ruby-3.3.0 -> 3.3.0)
-        version = version.sub(/^ruby-/, '')
-        # Keep the full version incl. patch (e.g., 4.0.5) so the Docker base
-        # image is the exact Ruby the gem pins. Compatibility lookups normalize
-        # to major.minor internally.
+        version = File.read(ruby_version_file).strip.sub(/^ruby-/, '')
         match = version.match(/^(\d+\.\d+(?:\.\d+)?)/)
         return clamp_ruby_version(match[1]) if match
       end
 
-      # Check gemspec for required_ruby_version
       gemspec_files = Dir.glob(File.join(base_path, '*.gemspec'))
       unless gemspec_files.empty?
         content = File.read(gemspec_files.first)
-        # Match patterns like: s.required_ruby_version = '>= 2.7.0' or '~> 3.0'
         if content =~ /required_ruby_version\s*=\s*['"]([><=~\s]*)([\d.]+)['"]/
           operator = ::Regexp.last_match(1).strip
           version = ::Regexp.last_match(2)
-
-          # Extract major.minor
-          if version =~ /^(\d+\.\d+)/
-            base_version = ::Regexp.last_match(1)
-
-            # Auto-detect for '~>', '>=', and exact versions. Whatever the
-            # gemspec floor is, clamp_ruby_version bumps it up to the minimum
-            # supported Ruby when it's too old to install modern Rails.
-            if ['~>', '>=', '', '='].include?(operator)
-              return clamp_ruby_version(base_version)
-            end
+          if version =~ /^(\d+\.\d+)/ && ['~>', '>=', '', '='].include?(operator)
+            return clamp_ruby_version(::Regexp.last_match(1))
           end
         end
       end
@@ -161,9 +316,6 @@ module Railstest
       nil
     end
 
-    # Ruby versions below the supported minimum can no longer fresh-install
-    # modern Rails (zeitwerk requires Ruby >= 3.2), so bump a too-old detected
-    # version up to the minimum we support.
     def clamp_ruby_version(version)
       return version unless version
 
@@ -176,57 +328,42 @@ module Railstest
     end
 
     def detect_rails_version(base_path)
-      # First check for gemfiles/ directory (local mode)
       gemfiles_dir = File.join(base_path, 'gemfiles')
       if File.directory?(gemfiles_dir)
-        # Find all files in gemfiles/ and extract version patterns
         gemfiles = Dir.glob(File.join(gemfiles_dir, '*'))
         unless gemfiles.empty?
-          # Extract versions from any filename pattern containing major.minor
-          # Matches: rails_7.0.gemfile, Gemfile.rails-5.2-rc1, rails-7.1.gemfile, etc.
-          # Extract versions from any filename pattern containing major.minor or major-major (e.g., 7.0, 7-0, 5.2)
-          versions = []
-          gemfiles.each do |f|
+          versions = gemfiles.filter_map do |f|
             basename = File.basename(f)
             next if basename =~ /(main|edge|master)/i || basename =~ /\.lock$/
-            # Match version pattern: digits with dots or dashes (e.g., 7-0, 7.0, 5-2, 5.2)
-            if match = basename.match(/(\d+[-.]?\d+)/)
-              versions << match[1].tr('-', '.')
-            end
+
+            match = basename.match(/(\d+[-.]?\d+)/)
+            match[1].tr('-', '.') if match
           end
           versions = versions.uniq.sort_by { |v| v.split('.').map(&:to_i) }
-
           return versions.last unless versions.empty?
 
           puts '⚠️  Warning: No Rails version patterns (e.g., 5.2, 7.0) found in gemfiles/'
-          puts "   Found files: #{Dir.glob(File.join(gemfiles_dir, '*')).map { |f| File.basename(f) }.join(', ')}"
-
+          puts "   Found files: #{gemfiles.map { |f| File.basename(f) }.join(', ')}"
         end
       end
 
-      # Check main Gemfile
       gemfile_path = File.join(base_path, 'Gemfile')
       if File.exist?(gemfile_path)
         content = File.read(gemfile_path)
-        # Match patterns like: gem "rails", "~> 7.1.0" or gem 'rails', '~> 7.1' or ">= 8.0.0"
         return ::Regexp.last_match(1) if content =~ /gem\s+['"]rails['"].*?(\d+\.\d+)/
 
-        # If Gemfile uses gemspec, check the gemspec file for rails dependency
         if content =~ /^gemspec\s*$/ || content =~ /gemspec\s*\(/
           gemspec_files = Dir.glob(File.join(base_path, '*.gemspec'))
           unless gemspec_files.empty?
             content = File.read(gemspec_files.first)
-            # Match patterns like: s.add_dependency "rails", "~> 6.0" or ">= 8.0.0"
             return ::Regexp.last_match(1) if content =~ /add_(?:runtime_)?dependency\s+['"]rails['"].*?(\d+\.\d+)/
           end
         end
       end
 
-      # Check gemspec files (fallback if no Gemfile or Gemfile doesn't use gemspec)
       gemspec_files = Dir.glob(File.join(base_path, '*.gemspec'))
       unless gemspec_files.empty?
         content = File.read(gemspec_files.first)
-        # Match patterns like: s.add_dependency "rails", "~> 6.0" or ">= 8.0.0"
         return ::Regexp.last_match(1) if content =~ /add_(?:runtime_)?dependency\s+['"]rails['"].*?(\d+\.\d+)/
       end
 
@@ -237,7 +374,6 @@ module Railstest
       errors = []
       hints = []
 
-      # Check if we're in local mode without gemfiles/
       if options[:gem_path].nil?
         base_path = Dir.pwd
         gemfiles_dir = File.join(base_path, 'gemfiles')
@@ -251,37 +387,15 @@ module Railstest
           hints << '  railstest --gem-path /path/to/gem --ruby VERSION --rails VERSION'
         end
 
-        if options[:ruby_version].nil?
-          errors << 'Ruby version not specified and could not be detected'
-          hints << '  Checked: .ruby-version file and gemspec required_ruby_version'
-          hints << '  Use --ruby VERSION to specify'
-        end
-
-        if options[:rails_version].nil?
-          errors << 'Rails version not specified and could not be detected from Gemfile'
-          hints << '  Use --rails VERSION or specify rails in your Gemfile'
-        end
+        errors << 'Ruby version not specified and could not be detected' if options[:ruby_version].nil?
+        errors << 'Rails version not specified and could not be detected from Gemfile' if options[:rails_version].nil?
       else
-        # In target-gem mode, auto-detect versions from gemspec if not specified
         base_path = options[:gem_path]
 
-        if options[:ruby_version].nil? && File.exist?(File.join(base_path, '*.gemspec'))
-          ruby_version = detect_ruby_version(base_path)
-          options[:ruby_version] = ruby_version if ruby_version
-        end
-
-        if options[:rails_version].nil?
-          rails_version = detect_rails_version(base_path)
-          options[:rails_version] = rails_version if rails_version
-        end
-
-        # Only require explicit versions if auto-detection fails completely
-        if options[:ruby_version].nil? && !File.exist?(File.join(base_path, '.ruby-version'))
+        if options[:ruby_version].nil?
           errors << 'Ruby version not specified and could not be detected'
-
-          # Provide helpful hints based on Rails version
           if options[:rails_version] && options[:rails_version].to_f >= 8.0
-            hints << "Rails #{options[:rails_version]} requires Ruby 3.1+"
+            hints << "Rails #{options[:rails_version]} requires Ruby 3.2+"
             hints << '  Use --ruby 3.2 or later'
           else
             hints << '  Checked: .ruby-version file and gemspec required_ruby_version'
@@ -289,9 +403,8 @@ module Railstest
           end
         end
 
-        if options[:rails_version].nil? && Dir.glob(File.join(base_path,
-                                                              '*.gemspec')).empty? && !File.exist?(File.join(base_path,
-                                                                                                             'Gemfile'))
+        if options[:rails_version].nil? && Dir.glob(File.join(base_path, '*.gemspec')).empty? &&
+           !File.exist?(File.join(base_path, 'Gemfile'))
           errors << 'Rails version not specified and could not be detected from Gemfile or gemspec'
           hints << '  Use --rails VERSION or add rails dependency to your gem'
         end
@@ -300,10 +413,10 @@ module Railstest
       return if errors.empty?
 
       puts "Error: Missing required configuration\n\n"
-      errors.each { |error| puts error }
+      errors.each { |e| puts e }
       unless hints.empty?
         puts ''
-        hints.each { |hint| puts hint }
+        hints.each { |h| puts h }
       end
       puts "\nRun 'railstest --help' for usage information"
       exit 1
@@ -312,24 +425,19 @@ module Railstest
     def check_compatibility!(options)
       ruby = options[:ruby_version]
       rails = options[:rails_version]
-
       compatible = Railstest.compatible?(ruby, rails)
 
       if compatible == false
         puts "\n⚠️  Warning: Ruby #{ruby} and Rails #{rails} may be incompatible\n"
-
         recommended = Railstest.recommended_rails_versions(ruby)
         puts "   Recommended Rails versions for Ruby #{ruby}: #{recommended.join(', ')}" unless recommended.empty?
-
         ruby_note = Railstest.note_for(ruby)
         rails_note = Railstest.note_for(rails)
         puts "   Note: #{ruby_note}" if ruby_note
         puts "   Note: #{rails_note}" if rails_note
-
         puts "\n   Proceeding anyway, but build may fail...\n\n"
-        sleep 2 # Give user time to read
+        sleep 2
       elsif compatible.nil?
-        # Unknown version, just note it
         ruby_note = Railstest.note_for(ruby)
         rails_note = Railstest.note_for(rails)
         if ruby_note || rails_note
@@ -341,7 +449,6 @@ module Railstest
     end
 
     def normalize_rails_version(version)
-      # Accept both 7.1 and 7_1 formats, normalize to dotted format
       version.to_s.tr('_', '.')
     end
   end
