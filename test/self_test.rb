@@ -6,6 +6,7 @@
 
 require 'English'
 require 'fileutils'
+require 'stringio'
 require_relative '../lib/railstest'
 
 def load_ruby_versions
@@ -39,12 +40,9 @@ end
 def update_gemfile_ruby_requirement(gemfile_path, min_version)
   content = File.read(gemfile_path)
 
-  # Check if there's already a Ruby requirement
   if content =~ /^#\s*Ruby:\s*>=\s*[\d.]+/
-    # Update existing requirement
     content.sub!(/^#\s*Ruby:\s*>=\s*[\d.]+/, "# Ruby: >= #{min_version}")
   else
-    # Add requirement after the first comment block
     lines = content.lines
     insert_idx = lines.index { |l| l.strip.empty? || !l.start_with?('#') } || 1
     lines.insert(insert_idx, "# Ruby: >= #{min_version}\n")
@@ -55,79 +53,100 @@ def update_gemfile_ruby_requirement(gemfile_path, min_version)
   puts "  📝 Updated #{gemfile_path} with Ruby >= #{min_version}"
 end
 
-def run_test(ruby, rails)
-  print "Testing Ruby #{ruby} + Rails #{rails}... "
+def run_test(ruby, rails, out: $stdout)
+  out.print "Testing Ruby #{ruby} + Rails #{rails}... "
 
-  # Check if gemfile exists
   gemfile_path = "gemfiles/rails_#{rails}.gemfile"
   unless File.exist?(gemfile_path)
-    puts "⚠️  SKIP (no gemfile: #{gemfile_path})"
+    out.puts "⚠️  SKIP (no gemfile: #{gemfile_path})"
     return :skipped
   end
 
-  # Skip combinations the library's compatibility matrix excludes
-  # (e.g. Rails 7.0 on Ruby 3.4+). This keeps the self-test in lockstep
-  # with SUPPORTED_VERSIONS so there is a single source of truth.
+  # Skip combinations the library's compatibility matrix excludes.
+  # This keeps the self-test in lockstep with SUPPORTED_VERSIONS so there
+  # is a single source of truth.
   if Railstest.compatible?(ruby, rails) == false
-    puts '⚠️  SKIP (not in compatibility matrix)'
+    out.puts '⚠️  SKIP (not in compatibility matrix)'
     return :skipped
   end
 
-  # Check Ruby version compatibility
   unless check_ruby_compatibility(gemfile_path, ruby)
-    puts '⚠️  SKIP (requires newer Ruby)'
+    out.puts '⚠️  SKIP (requires newer Ruby)'
     return :skipped
   end
 
-  # Run railstest on itself using local mode
   cmd = "railstest --ruby #{ruby} --rails #{rails} --db sqlite 2>&1"
   output = `#{cmd}`
   exit_code = $CHILD_STATUS.exitstatus
 
   if exit_code.zero?
-    puts '✅ PASS'
+    out.puts '✅ PASS'
     :pass
   elsif output =~ /Ruby \(>= ([\d.]+)\)/
-    # Check if failure is due to Ruby version requirement
     min_ruby = Regexp.last_match(1)
-    puts "❌ FAIL (requires Ruby >= #{min_ruby})"
+    out.puts "❌ FAIL (requires Ruby >= #{min_ruby})"
     update_gemfile_ruby_requirement(gemfile_path, min_ruby)
     :skipped
   else
-    puts "❌ FAIL (exit code: #{exit_code})"
-    puts "\nCommand: #{cmd}"
-    puts "\nUsing gemfile: #{gemfile_path}"
-    puts "\nOutput:"
-    puts output
-    puts "\n#{'=' * 60}"
+    out.puts "❌ FAIL (exit code: #{exit_code})"
+    out.puts "\nCommand: #{cmd}"
+    out.puts "\nUsing gemfile: #{gemfile_path}"
+    out.puts "\nOutput:"
+    out.puts output
+    out.puts "\n#{'=' * 60}"
     :fail
   end
 rescue StandardError => e
-  puts "❌ ERROR: #{e.message}"
-  puts e.backtrace.first(5).join("\n") if ENV['VERBOSE']
+  out.puts "❌ ERROR: #{e.message}"
+  out.puts e.backtrace.first(5).join("\n") if ENV['VERBOSE']
   :error
 end
 
-def main
-  puts 'Railstest Self-Test'
+def parse_workers
+  j_arg = ARGV.find { |a| a =~ /^-j\d+$/ }
+  j_arg ? j_arg.sub('-j', '').to_i : 1
+end
+
+def print_summary(results)
+  puts
   puts '=' * 60
-  puts 'Testing railstest on itself using gemfiles/ directory'
+  puts 'Results Summary:'
   puts
 
-  ruby_versions = load_ruby_versions
-  rails_versions = load_gemfiles
+  total = results.values.sum
+  puts "#{results[:pass]}/#{total} combinations passed"
+  puts "  Pass: #{results[:pass]}, Fail: #{results[:fail]}, Error: #{results[:error]}, Skipped: #{results[:skipped]}"
+end
 
-  puts "Ruby versions: #{ruby_versions.join(', ')}"
-  puts "Rails versions: #{rails_versions.join(', ')}"
-  puts
+def run_parallel(ruby_versions, rails_versions, workers)
+  queue = Queue.new
+  rails_versions.each { |rails| ruby_versions.each { |ruby| queue << [ruby, rails] } }
 
-  interactive = ARGV.include?('--interactive') || ARGV.include?('-i')
-  stop_on_fail = !ARGV.include?('--continue-on-error')
+  mutex = Mutex.new
+  results = { pass: 0, fail: 0, error: 0, skipped: 0 }
 
-  puts "Running in INTERACTIVE mode (press Enter to continue, 's' to skip)" if interactive
-  puts 'Will STOP on first failure' if stop_on_fail
-  puts
+  threads = workers.times.map do
+    Thread.new do
+      loop do
+        ruby, rails = queue.pop(true)
+        out = StringIO.new
+        result = run_test(ruby, rails, out: out)
+        mutex.synchronize do
+          print out.string
+          results[result] += 1
+        end
+      rescue ThreadError
+        break
+      end
+    end
+  end
 
+  threads.each(&:join)
+  print_summary(results)
+  exit 1 if results[:pass].zero?
+end
+
+def run_sequential(ruby_versions, rails_versions, interactive:, stop_on_fail:)
   results = { pass: 0, fail: 0, error: 0, skipped: 0 }
 
   rails_versions.each do |rails|
@@ -163,21 +182,42 @@ def main
     end
   end
 
-  puts
-  puts '=' * 60
-  puts 'Results Summary:'
-  puts
-
-  total = results.values.sum
-  puts "#{results[:pass]}/#{total} combinations passed"
-  puts "  Pass: #{results[:pass]}, Fail: #{results[:fail]}, Error: #{results[:error]}, Skipped: #{results[:skipped]}"
+  print_summary(results)
 
   puts
   puts 'Run with --interactive (-i) to step through tests'
   puts 'Run with --continue-on-error to test all combinations'
 
-  # Exit with error if any tests failed
   exit 1 if results[:pass].zero?
+end
+
+def main
+  puts 'Railstest Self-Test'
+  puts '=' * 60
+  puts 'Testing railstest on itself using gemfiles/ directory'
+  puts
+
+  ruby_versions = load_ruby_versions
+  rails_versions = load_gemfiles
+
+  puts "Ruby versions: #{ruby_versions.join(', ')}"
+  puts "Rails versions: #{rails_versions.join(', ')}"
+  puts
+
+  workers = parse_workers
+  interactive = ARGV.include?('--interactive') || ARGV.include?('-i')
+
+  if workers > 1 && !interactive
+    puts "Running #{ruby_versions.length * rails_versions.length} combinations with #{workers} parallel workers"
+    puts
+    run_parallel(ruby_versions, rails_versions, workers)
+  else
+    stop_on_fail = !ARGV.include?('--continue-on-error')
+    puts "Running in INTERACTIVE mode (press Enter to continue, 's' to skip)" if interactive
+    puts 'Will STOP on first failure' if stop_on_fail && !interactive
+    puts
+    run_sequential(ruby_versions, rails_versions, interactive: interactive, stop_on_fail: stop_on_fail)
+  end
 end
 
 main if __FILE__ == $PROGRAM_NAME
