@@ -129,6 +129,20 @@ module Railstest
 
     private
 
+    # Reads an Aptfile from the gem root (one package per line, # comments allowed).
+    # Returns the packages as a space-separated string, or '' if no Aptfile exists.
+    def extra_apt_packages
+      return '' unless target_gem_mode?
+
+      aptfile = File.join(expanded_gem_path, 'Aptfile')
+      return '' unless File.exist?(aptfile)
+
+      packages = File.readlines(aptfile)
+                     .map { |l| l.sub(/#.*/, '').strip }
+                     .reject(&:empty?)
+      packages.join(' ')
+    end
+
     # Returns the Dockerfile RUN lines needed to install the requested database adapter,
     # stripping any existing declaration first to avoid version conflicts.
     # Returns an empty string when no --db was specified (gem's own Gemfile is used as-is).
@@ -204,7 +218,7 @@ module Railstest
 
           ARG RAILS_VERSION
 
-          RUN apt-get update -qq && apt-get install -y build-essential git curl
+          RUN apt-get update -qq && apt-get install -y build-essential git curl #{extra_apt_packages}
 
           WORKDIR /app/test_app
 
@@ -217,7 +231,7 @@ module Railstest
           RUN rm -f Gemfile.lock
           #{adapter_setup}
 
-          RUN gem update --system --quiet && gem install bundler --quiet --no-document && bundle install --quiet
+          RUN gem install bundler --quiet --no-document && bundle install --quiet
         DOCKERFILE
       else
         # Regular Rails app or library - create new test app
