@@ -137,6 +137,7 @@ module Railstest
         Thread.new do
           loop do
             ruby, rails = queue.pop(true)
+            mutex.synchronize { puts "  ⏳ Ruby #{ruby} + Rails #{rails}..." }
             start = Time.now
             output, status = Open3.capture2e(bin, *base_args, '--ruby', ruby, '--rails', rails)
             elapsed = (Time.now - start).round
