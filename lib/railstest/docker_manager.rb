@@ -1,5 +1,7 @@
-require "tmpdir"
-require "fileutils"
+# frozen_string_literal: true
+
+require 'tmpdir'
+require 'fileutils'
 
 module Railstest
   class DockerManager
@@ -22,43 +24,43 @@ module Railstest
         File.write(dockerfile_path, generate_dockerfile)
 
         build_args = [
-          "--build-arg", "RUBY_VERSION=#{ruby_version}"
+          '--build-arg', "RUBY_VERSION=#{ruby_version}"
         ]
 
         if target_gem_mode?
-          build_args << "--build-arg" << "TARGET_GEM_NAME=#{target_gem_name}"
-          build_args << "--build-arg" << "RAILS_VERSION=#{rails_version}"
+          build_args << '--build-arg' << "TARGET_GEM_NAME=#{target_gem_name}"
+          build_args << '--build-arg' << "RAILS_VERSION=#{rails_version}"
         else
           # Local mode: find actual gemfile and pass it
           gemfile = find_gemfile_for_version
-          build_args << "--build-arg" << "GEMFILE_PATH=gemfiles/#{gemfile}"
+          build_args << '--build-arg' << "GEMFILE_PATH=gemfiles/#{gemfile}"
         end
 
         success = system(
-          "docker", "build", ".",
-          "-f", dockerfile_path,
+          'docker', 'build', '.',
+          '-f', dockerfile_path,
           *build_args,
-          "-t", image_name
+          '-t', image_name
         )
 
-        raise Error, "Docker build failed" unless success
+        raise Error, 'Docker build failed' unless success
       ensure
         FileUtils.rm_f(dockerfile_path)
       end
     end
 
     def run_command(command, env_vars: {}, volumes: [], workdir: nil)
-      docker_cmd = ["docker", "run", "--rm", "--network=host"]
+      docker_cmd = ['docker', 'run', '--rm', '--network=host']
 
       env_vars.each do |key, value|
-        docker_cmd << "-e" << "#{key}=#{value}"
+        docker_cmd << '-e' << "#{key}=#{value}"
       end
 
       volumes.each do |volume|
-        docker_cmd << "-v" << volume
+        docker_cmd << '-v' << volume
       end
 
-      docker_cmd << "-w" << workdir if workdir
+      docker_cmd << '-w' << workdir if workdir
 
       docker_cmd << image_name
       docker_cmd.concat(Array(command))
@@ -67,7 +69,10 @@ module Railstest
     end
 
     def image_name
-      @image_name ||= "#{File.basename(Dir.pwd)}-tests"
+      @image_name ||= begin
+        base = File.basename(Dir.pwd).downcase.gsub(/[^a-z0-9._-]/, '-')
+        "#{base}-tests"
+      end
     end
 
     def target_gem_mode?
@@ -83,6 +88,7 @@ module Railstest
 
     def expanded_gem_path
       return nil unless target_gem_mode?
+
       File.expand_path(gem_path)
     end
 
@@ -96,18 +102,17 @@ module Railstest
       # Handles various naming conventions: rails_7.0.gemfile, Gemfile.rails-5.2-rc1, etc.
       return nil if target_gem_mode?
 
-      gemfiles_dir = "gemfiles"
+      gemfiles_dir = 'gemfiles'
       return nil unless File.directory?(gemfiles_dir)
 
       # Look for any file containing the version pattern, exclude lock files
-      matching_files = Dir.glob(File.join(gemfiles_dir, "*")).select do |f|
+      matching_files = Dir.glob(File.join(gemfiles_dir, '*')).select do |f|
         basename = File.basename(f)
-        basename =~ /#{Regexp.escape(rails_version)}/ && basename !~ /\.lock$/
+        rails_version_regex = rails_version.gsub('.', '[.-]')
+        basename =~ /#{rails_version_regex}/ && basename !~ /\.lock$/
       end
 
-      if matching_files.empty?
-        raise Error, "No gemfile found in gemfiles/ for Rails #{rails_version}"
-      end
+      raise Error, "No gemfile found in gemfiles/ for Rails #{rails_version}" if matching_files.empty?
 
       if matching_files.length > 1
         # Prefer exact patterns, warn about multiple matches
@@ -122,47 +127,41 @@ module Railstest
     private
 
     def validate_docker!
-      unless system("docker --version > /dev/null 2>&1")
-        raise Error, "Docker is not installed or not in PATH"
-      end
+      return if system('docker --version > /dev/null 2>&1')
+
+      raise Error, 'Docker is not installed or not in PATH'
     end
 
     def validate_gem_path!
       expanded = File.expand_path(gem_path)
-      unless File.directory?(expanded)
-        raise Error, "Gem path does not exist: #{expanded}"
-      end
+      raise Error, "Gem path does not exist: #{expanded}" unless File.directory?(expanded)
 
       # Check if gem has gemfiles/ directory - should use local mode instead
-      gemfiles_dir = File.join(expanded, "gemfiles")
-      if File.directory?(gemfiles_dir)
-        raise Error, <<~ERROR
-          This gem has a 'gemfiles/' directory and should be tested in local mode.
+      gemfiles_dir = File.join(expanded, 'gemfiles')
+      return unless File.directory?(gemfiles_dir)
 
-          Instead of:
-            railstest --gem-path #{gem_path}
+      raise Error, <<~ERROR
+        This gem has a 'gemfiles/' directory and should be tested in local mode.
 
-          Use local mode by running from the gem directory:
-            cd #{gem_path}
-            railstest
-        ERROR
-      end
+        Instead of:
+          railstest --gem-path #{gem_path}
+
+        Use local mode by running from the gem directory:
+          cd #{gem_path}
+          railstest
+      ERROR
     end
 
     def extract_gem_name(gemspec_path)
-      gemspec_files = Dir.glob(File.join(gemspec_path, "*.gemspec"))
+      gemspec_files = Dir.glob(File.join(gemspec_path, '*.gemspec'))
 
-      if gemspec_files.empty?
-        raise Error, "No .gemspec file found in #{gemspec_path}"
-      end
+      raise Error, "No .gemspec file found in #{gemspec_path}" if gemspec_files.empty?
 
       gemspec_file = gemspec_files.first
       content = File.read(gemspec_file)
 
       # Try to match spec.name = "gem_name" or s.name = 'gem_name' (handles both spec and s)
-      if content =~ /\w+\.name\s*=\s*["']([^"']+)["']/
-        return $1
-      end
+      return ::Regexp.last_match(1) if content =~ /\w+\.name\s*=\s*["']([^"']+)["']/
 
       raise Error, "Could not extract gem name from #{gemspec_file}"
     end
@@ -176,39 +175,74 @@ module Railstest
     end
 
     def generate_target_gem_dockerfile
-      <<~DOCKERFILE
-        # Dockerfile for running gem tests
+      has_dummy_app = File.exist?(File.join(expanded_gem_path, 'test/dummy/config/environment.rb'))
 
-        ARG RUBY_VERSION=3.3
-        FROM ruby:$RUBY_VERSION
+      if has_dummy_app
+        # Rails engine with dummy app - mount gem and test from within it
+        <<~DOCKERFILE
+          # Dockerfile for running Rails engine tests
 
-        ARG RAILS_VERSION
-        ARG TARGET_GEM_NAME
+          ARG RUBY_VERSION=3.3
+          FROM ruby:$RUBY_VERSION
 
-        RUN apt-get update -qq && apt-get install -y build-essential git
+          ARG RAILS_VERSION
 
-        WORKDIR /app
+          RUN apt-get update -qq && apt-get install -y build-essential git curl
 
-        # Create a new Rails application to host the gem tests
-        # Use full Rails (not minimal/api) since gem could extend any part of Rails
-        RUN gem install rails --version "~> ${RAILS_VERSION}.0" --no-document
-        RUN rails new test_app --skip-bundle
+          WORKDIR /app/test_app
 
-        WORKDIR /app/test_app
+          # Install Rails version needed by the gem
+          RUN gem install rails --version "~> ${RAILS_VERSION}.0" --no-document
 
-        # Remove default sqlite3 gem and add all database adapters
-        RUN sed -i '/gem.*sqlite3/d' Gemfile && \\
-            echo "gem 'sqlite3', '~> 1.4'" >> Gemfile && \\
-            echo "gem 'mysql2', '~> 0.5'" >> Gemfile && \\
-            echo "gem 'pg', '~> 1.1'" >> Gemfile
+          # Copy all gem files
+          COPY . .
 
-        # Remove existing gem entry if present, then add target gem with path
-        # (handles case where gem is already a Rails dependency)
-        RUN sed -i "/gem ['\\\"]${TARGET_GEM_NAME}['\\\"]/d" Gemfile && \\
-            echo "gem '${TARGET_GEM_NAME}', path: '/app/target_gem'" >> Gemfile
+          # Remove sqlite3 from lock file, add all database adapters to Gemfile#{'  '}
+          RUN rm -f Gemfile.lock
+          RUN grep -v sqlite3 Gemfile > tmp && mv tmp Gemfile
+          RUN echo "gem 'sqlite3', '~> 2.1'" >> Gemfile
+          RUN echo "gem 'mysql2', '~> 0.5'" >> Gemfile
+          RUN echo "gem 'pg', '~> 1.1'" >> Gemfile
 
-        # Note: bundle install will run at runtime after gem is mounted
-      DOCKERFILE
+          # Update bundler and install dependencies with new gems
+          RUN gem update --system && gem install bundler && bundle install
+        DOCKERFILE
+      else
+        # Regular Rails app or library - create new test app
+        <<~DOCKERFILE
+          # Dockerfile for running gem tests
+
+          ARG RUBY_VERSION=3.3
+          FROM ruby:$RUBY_VERSION
+
+          ARG RAILS_VERSION
+          ARG TARGET_GEM_NAME
+
+          RUN apt-get update -qq && apt-get install -y build-essential git curl
+
+          WORKDIR /app
+
+          # Create a new Rails application to host the gem tests
+          # Use full Rails (not minimal/api) since gem could extend any part of Rails
+          RUN gem install rails --version "~> ${RAILS_VERSION}.0" --no-document
+          RUN rails new test_app --skip-bundle
+
+          WORKDIR /app/test_app
+
+          # Remove default sqlite3 gem and add all database adapters
+          RUN sed -i '/gem.*sqlite3/d' Gemfile && \
+              echo "gem 'sqlite3', '~> 1.4'" >> Gemfile && \
+              echo "gem 'mysql2', '~> 0.5'" >> Gemfile && \
+              echo "gem 'pg', '~> 1.1'" >> Gemfile
+
+          # Remove existing gem entry if present, then add target gem with path
+          RUN sed -i "/gem ['\"]${TARGET_GEM_NAME}['\"]/d" Gemfile && \
+              echo "gem '${TARGET_GEM_NAME}', path: '/app/target_gem'" >> Gemfile
+
+          # Install dependencies - this gets cached if Gemfile doesn't change
+          RUN bundle install
+        DOCKERFILE
+      end
     end
 
     def generate_local_dockerfile
