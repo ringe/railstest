@@ -71,7 +71,9 @@ module Railstest
     def image_name
       @image_name ||= begin
         base = File.basename(Dir.pwd).downcase.gsub(/[^a-z0-9._-]/, '-')
-        "#{base}-tests"
+        ruby_tag = ruby_version.to_s.gsub(/[^a-z0-9._-]/, '-')
+        rails_tag = rails_version.to_s.gsub(/[^a-z0-9._-]/, '-')
+        "#{base}-ruby#{ruby_tag}-rails#{rails_tag}-tests"
       end
     end
 
