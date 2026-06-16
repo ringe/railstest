@@ -122,6 +122,17 @@ module Railstest
       puts "\nRailstest testing #{gem_name} against #{combos.length} " \
            "combination#{'s' unless combos.length == 1} #{worker_label}...\n\n"
 
+      tty = $stdout.tty?
+      positions = {}
+
+      if tty
+        combos.each_with_index do |(ruby, rails), i|
+          puts "  ⏳ Ruby #{ruby} + Rails #{rails}..."
+          positions["#{ruby}+#{rails}"] = i
+        end
+      end
+
+      n = combos.length
       queue = Queue.new
       combos.each { |c| queue << c }
 
@@ -137,16 +148,23 @@ module Railstest
         Thread.new do
           loop do
             ruby, rails = queue.pop(true)
-            mutex.synchronize { puts "  ⏳ Ruby #{ruby} + Rails #{rails}..." }
+            key = "#{ruby}+#{rails}"
+            mutex.synchronize { puts "  ⏳ Ruby #{ruby} + Rails #{rails}..." } unless tty
             start = Time.now
             output, status = Open3.capture2e(bin, *base_args, '--ruby', ruby, '--rails', rails)
             elapsed = (Time.now - start).round
             passed = status.exitstatus.zero?
+            label = "  #{passed ? '✅' : '❌'} Ruby #{ruby} + Rails #{rails} (#{elapsed}s)"
 
             mutex.synchronize do
-              results["#{ruby}+#{rails}"] = { passed: passed, ruby: ruby, rails: rails,
-                                              elapsed: elapsed, output: output }
-              puts "  #{passed ? '✅' : '❌'} Ruby #{ruby} + Rails #{rails} (#{elapsed}s)"
+              results[key] = { passed: passed, ruby: ruby, rails: rails,
+                               elapsed: elapsed, output: output }
+              if tty
+                lines_up = n - positions[key]
+                print "\e[#{lines_up}A\r\e[2K#{label}\e[#{lines_up}B\r"
+              else
+                puts label
+              end
             end
           rescue ThreadError
             break
@@ -155,6 +173,8 @@ module Railstest
       end
 
       threads.each(&:join)
+
+      puts  # blank line after the combo block
 
       failures = results.values.reject { |r| r[:passed] }
       unless failures.empty?
