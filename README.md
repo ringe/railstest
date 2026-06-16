@@ -1,4 +1,4 @@
-# Railstest v0.2.0
+# Railstest v0.3.1
 
 A Docker-based CLI tool for testing Ruby gems. Runs tests on various Ruby, Rails, and database combinations with automatic caching.
 
@@ -257,7 +257,7 @@ If you see `GemNotFound` errors, ensure all required gems are in your Gemfile an
 gem build railstest.gemspec
 
 # Install locally
-gem install railstest-0.2.0.gem
+gem install railstest-0.3.1.gem
 
 # Test against a gem — all combinations, or pin both for a quick smoke test
 cd /path/to/test-gem
@@ -271,7 +271,7 @@ railstest --gem-path . --ruby 3.2 --rails 8.1
 # Build and install from current directory
 cd railstest
 gem build railstest.gemspec
-gem uninstall railstest -a && gem install railstest-0.2.0.gem
+gem uninstall railstest -a && gem install railstest-0.3.1.gem
 
 # Test against a gem — run all combinations or narrow down while iterating
 cd ../your-gem

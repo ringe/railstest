@@ -6,7 +6,7 @@ Gem::Specification.new do |spec|
   spec.name = 'railstest'
   spec.version = Railstest::VERSION
   spec.authors = ['Runar Ingebrigtsen']
-  spec.email = ['runar@rin.no']
+  spec.email = ['ringe@rin.no']
 
   spec.summary = 'Docker-based testing tool for Rails gems'
   spec.description = 'Test Rails gems with various Ruby, Rails, and database combinations using Docker'
