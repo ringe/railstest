@@ -1,22 +1,27 @@
 #!/usr/bin/env ruby
+# frozen_string_literal: true
+
 # Self-test script for railstest
 # Tests railstest on itself using gemfiles/ directory
 
-require "fileutils"
+require 'English'
+require 'fileutils'
+require_relative '../lib/railstest'
 
 def load_ruby_versions
-  versions_file = File.expand_path("../../gemfiles/ruby-versions", __FILE__)
-  File.readlines(versions_file).map(&:strip).reject { |line| line.empty? || line.start_with?("#") }
+  versions_file = File.expand_path('../gemfiles/ruby-versions', __dir__)
+  File.readlines(versions_file).map(&:strip).reject { |line| line.empty? || line.start_with?('#') }
 end
 
 def load_gemfiles
-  gemfiles_dir = File.expand_path("../../gemfiles", __FILE__)
-  Dir.glob(File.join(gemfiles_dir, "rails_*.gemfile")).map do |path|
-    File.basename(path, ".gemfile").sub("rails_", "")
+  gemfiles_dir = File.expand_path('../gemfiles', __dir__)
+  Dir.glob(File.join(gemfiles_dir, 'rails_*.gemfile')).map do |path|
+    File.basename(path, '.gemfile').sub('rails_', '')
   end.reject do |rails|
-    # Skip gemfiles marked as UNSUPPORTED in header
+    # Skip gemfiles marked as UNSUPPORTED anywhere in the header comments
+    # (the marker sits below the frozen_string_literal magic comment).
     gemfile_path = File.join(gemfiles_dir, "rails_#{rails}.gemfile")
-    File.read(gemfile_path).lines.first&.include?("UNSUPPORTED")
+    File.read(gemfile_path).include?('UNSUPPORTED')
   end
 end
 
@@ -24,7 +29,7 @@ def check_ruby_compatibility(gemfile_path, ruby_version)
   # Parse "# Ruby: >= X.Y" from gemfile header
   File.readlines(gemfile_path).each do |line|
     if line =~ /^#\s*Ruby:\s*>=\s*([\d.]+)/
-      min_version = $1
+      min_version = Regexp.last_match(1)
       return Gem::Version.new(ruby_version) >= Gem::Version.new(min_version)
     end
   end
@@ -60,65 +65,67 @@ def run_test(ruby, rails)
     return :skipped
   end
 
+  # Skip combinations the library's compatibility matrix excludes
+  # (e.g. Rails 7.0 on Ruby 3.4+). This keeps the self-test in lockstep
+  # with SUPPORTED_VERSIONS so there is a single source of truth.
+  if Railstest.compatible?(ruby, rails) == false
+    puts '⚠️  SKIP (not in compatibility matrix)'
+    return :skipped
+  end
+
   # Check Ruby version compatibility
   unless check_ruby_compatibility(gemfile_path, ruby)
-    puts "⚠️  SKIP (requires newer Ruby)"
+    puts '⚠️  SKIP (requires newer Ruby)'
     return :skipped
   end
 
   # Run railstest on itself using local mode
   cmd = "railstest --ruby #{ruby} --rails #{rails} --db sqlite 2>&1"
   output = `#{cmd}`
-  exit_code = $?.exitstatus
+  exit_code = $CHILD_STATUS.exitstatus
 
-  if exit_code == 0
-    puts "✅ PASS"
-    return :pass
-  else
+  if exit_code.zero?
+    puts '✅ PASS'
+    :pass
+  elsif output =~ /Ruby \(>= ([\d.]+)\)/
     # Check if failure is due to Ruby version requirement
-    if output =~ /Ruby \(>= ([\d.]+)\)/
-      min_ruby = $1
-      puts "❌ FAIL (requires Ruby >= #{min_ruby})"
-      update_gemfile_ruby_requirement(gemfile_path, min_ruby)
-      return :skipped # Treat as skip since we now know it's incompatible
-    else
-      puts "❌ FAIL (exit code: #{exit_code})"
-      puts "\nCommand: #{cmd}"
-      puts "\nUsing gemfile: #{gemfile_path}"
-      puts "\nOutput:"
-      puts output
-      puts "\n" + "=" * 60
-      return :fail
-    end
+    min_ruby = Regexp.last_match(1)
+    puts "❌ FAIL (requires Ruby >= #{min_ruby})"
+    update_gemfile_ruby_requirement(gemfile_path, min_ruby)
+    :skipped
+  else
+    puts "❌ FAIL (exit code: #{exit_code})"
+    puts "\nCommand: #{cmd}"
+    puts "\nUsing gemfile: #{gemfile_path}"
+    puts "\nOutput:"
+    puts output
+    puts "\n#{'=' * 60}"
+    :fail
   end
-rescue => e
+rescue StandardError => e
   puts "❌ ERROR: #{e.message}"
-  puts e.backtrace.first(5).join("\n") if ENV["VERBOSE"]
-  return :error
+  puts e.backtrace.first(5).join("\n") if ENV['VERBOSE']
+  :error
 end
 
 def main
-  puts "Railstest Self-Test"
-  puts "=" * 60
-  puts "Testing railstest on itself using gemfiles/ directory"
+  puts 'Railstest Self-Test'
+  puts '=' * 60
+  puts 'Testing railstest on itself using gemfiles/ directory'
   puts
 
   ruby_versions = load_ruby_versions
   rails_versions = load_gemfiles
 
-  puts "Ruby versions: #{ruby_versions.join(", ")}"
-  puts "Rails versions: #{rails_versions.join(", ")}"
+  puts "Ruby versions: #{ruby_versions.join(', ')}"
+  puts "Rails versions: #{rails_versions.join(', ')}"
   puts
 
-  interactive = ARGV.include?("--interactive") || ARGV.include?("-i")
-  stop_on_fail = !ARGV.include?("--continue-on-error")
+  interactive = ARGV.include?('--interactive') || ARGV.include?('-i')
+  stop_on_fail = !ARGV.include?('--continue-on-error')
 
-  if interactive
-    puts "Running in INTERACTIVE mode (press Enter to continue, 's' to skip)"
-  end
-  if stop_on_fail
-    puts "Will STOP on first failure"
-  end
+  puts "Running in INTERACTIVE mode (press Enter to continue, 's' to skip)" if interactive
+  puts 'Will STOP on first failure' if stop_on_fail
   puts
 
   results = { pass: 0, fail: 0, error: 0, skipped: 0 }
@@ -135,9 +142,9 @@ def main
 
       if interactive
         print "\nPress Enter to test Ruby #{ruby} + Rails #{rails}, or 's' to skip: "
-        input = STDIN.gets.chomp
+        input = $stdin.gets.chomp
         if input.downcase == 's'
-          puts "Skipped."
+          puts 'Skipped.'
           results[:skipped] += 1
           next
         end
@@ -146,19 +153,19 @@ def main
       result = run_test(ruby, rails)
       results[result] += 1
 
-      if result == :fail || result == :error
-        rails_failed = true
-        if stop_on_fail
-          puts "\n❌ STOPPED on failure. Run with --continue-on-error to test all combinations."
-          exit 1
-        end
+      next unless %i[fail error].include?(result)
+
+      rails_failed = true
+      if stop_on_fail
+        puts "\n❌ STOPPED on failure. Run with --continue-on-error to test all combinations."
+        exit 1
       end
     end
   end
 
   puts
-  puts "=" * 60
-  puts "Results Summary:"
+  puts '=' * 60
+  puts 'Results Summary:'
   puts
 
   total = results.values.sum
@@ -166,11 +173,11 @@ def main
   puts "  Pass: #{results[:pass]}, Fail: #{results[:fail]}, Error: #{results[:error]}, Skipped: #{results[:skipped]}"
 
   puts
-  puts "Run with --interactive (-i) to step through tests"
-  puts "Run with --continue-on-error to test all combinations"
+  puts 'Run with --interactive (-i) to step through tests'
+  puts 'Run with --continue-on-error to test all combinations'
 
   # Exit with error if any tests failed
-  exit 1 if results[:pass] == 0
+  exit 1 if results[:pass].zero?
 end
 
-main if __FILE__ == $0
+main if __FILE__ == $PROGRAM_NAME

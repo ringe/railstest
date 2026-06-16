@@ -1,23 +1,25 @@
-# Railstest
+# Railstest v0.2.0
 
-A Docker-based CLI tool for testing Ruby gems. Runs tests on various Ruby, Rails, and database combinations.
+A Docker-based CLI tool for testing Ruby gems. Runs tests on various Ruby, Rails, and database combinations with automatic caching.
 
 ## Features
 
-- **Auto-detects Ruby and Rails versions** from your gem's configuration
-- **Two testing modes**: Local (for gems with `gemfiles/`) and Target-Gem (mount into fresh Rails app)
+- **Auto-detects Ruby and Rails versions** from `.ruby-version`, `Gemfile`, or gemspec (supports any version operator: `~>`, `>=`, etc.)
+- **Two testing modes**: Local (for gems with `gemfiles/`) and Target-Gem (bakes gem into Docker image)
+- **Rails engine support**: Automatically detects Rails engines with dummy apps and tests them correctly
+- **Gem caching**: All dependencies cached in Docker layers for fast subsequent runs (~1.5s vs 2+ min)
 - **Compatibility warnings**: Alerts you about known incompatible version combinations
-- **Multiple databases**: SQLite, MySQL, and PostgreSQL support
+- **Multiple databases**: SQLite, MySQL, and PostgreSQL support (automatically configured)
 - **Test framework detection**: Automatically detects RSpec or Rails test
 - **Docker isolation**: Reproducible tests in clean environments
 - **Zero runtime dependencies**: Just Docker required
 
 ### CLI Options
-- `--ruby VERSION` - Specify Ruby version
-- `--rails VERSION` - Specify Rails version (accepts 7.1 or 7_1 format)
-- `--db DATABASE` - Choose database (sqlite, mysql, postgres)
+- `--ruby VERSION` - Specify Ruby version (auto-detected from `.ruby-version` or gemspec)
+- `--rails VERSION` - Specify Rails version, accepts 7.1 or 7_1 format (auto-detected from Gemfile/gemspec)
+- `--db DATABASE` - Choose database: sqlite, mysql, postgres (default: sqlite)
 - `--path PATH` - Run specific test file or directory
-- `--gem-path PATH` - Enable target-gem mode
+- `--gem-path PATH` - Enable target-gem mode for external gems
 - `--version` - Show version
 - `--help` - Show help
 
@@ -62,7 +64,7 @@ railstest --version
 
 ### Target-Gem Mode Examples
 
-When versions can be auto-detected:
+When versions can be auto-detected (from Gemfile or gemspec):
 
 ```bash
 railstest --gem-path /path/to/your/gem
@@ -98,6 +100,16 @@ Test specific file:
 railstest --path test/models/user_test.rb --gem-path /path/to/gem
 ```
 
+### Rails Engine Support
+
+Railstest automatically detects Rails engines (gems with `test/dummy/config/environment.rb`) and tests them correctly without volume mounting:
+
+```bash
+cd your-rails-engine
+railstest              # Auto-detects versions and runs engine tests
+railstest --ruby 3.2   # Specify Ruby if not detected
+```
+
 ### Local Mode Examples
 
 For gems with their own test infrastructure:
@@ -116,17 +128,18 @@ railstest --path test/specific_test.rb # Run specific test file
 **Ruby version** (in order of precedence):
 1. `.ruby-version` file
 2. `required_ruby_version` from gemspec (if >= 2.7 or ~> constraint)
-3. Falls back to requiring `--ruby` flag
+3. Falls back to requiring `--ruby` flag with helpful hints for Rails 8+
 
 **Rails version** (in order of precedence):
 1. Newest version in `gemfiles/` directory (for local mode)
 2. Rails dependency in `Gemfile`
-3. Rails dependency in gemspec
+3. Rails dependency in gemspec (supports any operator: `~>`, `>=`, etc.)
 4. Falls back to requiring `--rails` flag
 
 **Notes:**
 - Versions < 2.7 (Ruby) or < 7.0 (Rails) require manual specification
 - The tool warns about known incompatible combinations
+- Rails 8+ automatically suggests Ruby 3.1+ when not specified
 
 ## Requirements
 
@@ -151,12 +164,15 @@ Railstest tests itself using these combinations (see `gemfiles/`):
 | 3.4  | 7.1, 7.2, 8.0, 8.1 |
 | 3.3  | 7.0, 7.1, 7.2, 8.0, 8.1 |
 | 3.2  | 7.0, 7.1, 7.2, 8.0, 8.1 |
-| 3.1  | 7.0, 7.1, 7.2 |
 
 **Self-test version policy:**
-- Use latest stable patch of each major.minor (e.g., 3.3.x → 3.3.7, Rails 8.0.x → 8.0.4)
-- Pin dependencies minimally - only when needed to resolve conflicts
-- See `gemfiles/README.md` for exact versions used
+- Target each Rails minor with a pessimistic constraint (`gem 'rails', '~> X.Y.0'`) and run on the `ruby:X.Y` Docker image. Both float to the latest stable patch on their own, so there are no exact patch versions to keep up to date.
+- Pin other dependencies only when a specific version is needed to resolve a conflict (the exception, not the rule).
+- See `gemfiles/` for the per-version constraints.
+
+### Supported Ruby and Rails Versions
+
+Railstest can test with **any** Ruby version that builds in Docker (typically 2.5+) and any Rails version from 5.0+. The tool doesn't restrict which combinations you can use - it provides the Docker environment to run them.
 
 ## How It Works
 
@@ -166,20 +182,32 @@ Railstest tests itself using these combinations (see `gemfiles/`):
 3. Runs your gem's own `bin/rails test` or `bundle exec rspec`
 4. Perfect for gems with complete test infrastructure
 
-### Target-Gem Mode
-1. Creates a fresh Rails application in Docker
-2. Mounts your gem at `/app/target_gem`
-3. Adds your gem to the Rails app's Gemfile
-4. Runs tests from your gem within the Rails app context
-5. Useful for testing gems in isolation
+### Target-Gem Mode (Simple Gems)
+1. Creates a fresh Rails application in Docker during build
+2. Copies your gem files into the image (cached in layers)
+3. Installs all dependencies including database adapters (sqlite3, mysql2, pg)
+4. No volume mounting needed - everything baked into image
+5. Runs tests from your gem within the Rails app context
+
+### Rails Engine Mode (Automatic Detection)
+1. Detects engines by checking for `test/dummy/config/environment.rb`
+2. Copies engine files directly into test_app directory during build
+3. Installs dependencies with proper database adapters
+4. Tests run directly in the container without volume mounts
+5. Fast caching - all gems and code cached between runs
+
+**Caching:** All layers are cached after first build. Subsequent runs complete in ~1.5 seconds vs 2+ minutes for full rebuilds.
 
 ## Troubleshooting
 
 ### "Missing required configuration" error
 ```
 Error: Ruby version not specified and could not be detected
+
+Rails 8.0 requires Ruby 3.1+
+  Use --ruby 3.2 or later
 ```
-**Solution:** Add a `.ruby-version` file or use `--ruby VERSION` flag
+**Solution:** Add a `.ruby-version` file or use `--ruby VERSION` flag (Rails 8+ needs Ruby 3.1+)
 
 ### "Local mode requires a 'gemfiles/' directory" error
 **Solution:** This gem should use target-gem mode:
@@ -190,11 +218,15 @@ railstest --gem-path . --ruby 3.3 --rails 7.1
 ### Compatibility warnings
 ```
 ⚠️  Warning: Ruby 3.3 and Rails 5.2 may be incompatible
+   Recommended Rails versions for Ruby 3.3: 7.0, 7.1, 7.2, 8.0, 8.1
 ```
 **This is informational** - the tool will still attempt to run, but the build may fail. Use the recommended Rails versions for your Ruby version.
 
 ### Docker build fails with old Ruby versions
 Ruby < 2.5 uses EOL operating systems with broken package repositories. Use Ruby 2.5+ for reliable Docker builds.
+
+### Tests can't find gems after first run
+If you see `GemNotFound` errors, ensure all required gems are in your Gemfile and that the Docker build completed successfully. The tool caches all dependencies, so if a gem is missing from your Gemfile it won't be available at runtime.
 
 ## Development
 
@@ -203,12 +235,36 @@ Ruby < 2.5 uses EOL operating systems with broken package repositories. Use Ruby
 gem build railstest.gemspec
 
 # Install locally
-gem install railstest-0.1.0.gem
+gem install railstest-0.2.0.gem
 
-# Test it
+# Test it with caching (first run builds image, subsequent runs are fast)
 cd /path/to/test-gem
-railstest
+railstest --gem-path . --ruby 3.2
 ```
+
+### Testing Changes to Railstest
+
+Test your changes against a gem:
+
+```bash
+# Build and install from current directory
+cd railstest
+gem build railstest.gemspec
+gem uninstall railstest -a && gem install railstest-0.2.0.gem
+
+# Test against active_canvas (Rails engine)
+cd ../active_canvas
+railstest --gem-path . --ruby 3.2
+
+# First run: ~2 minutes (builds Docker image with all gems cached)
+# Second run: ~1.5 seconds (uses cached layers)
+```
+
+### Caching Behavior
+
+- **First build:** Copies gem files, installs RubyGems, updates Bundler, runs `bundle install` (~2 min)
+- **Subsequent builds:** Uses cached Docker layers if Gemfile hasn't changed (< 3s)
+- **Gem file changes:** Invalidate cache for steps after COPY . . (still fast)
 
 ## Self-Testing
 
@@ -221,6 +277,12 @@ Railstest tests itself using the `gemfiles/` directory:
 ```
 
 The test discovers gemfiles automatically and tests each with Ruby versions listed in `gemfiles/ruby-versions`.
+
+### Performance Note
+
+With caching enabled, self-tests run significantly faster:
+- **Without cache:** ~2 minutes per combination (full rebuild)
+- **With cache:** ~1.5 seconds per combination after first build
 
 ## Contributing
 
@@ -235,12 +297,13 @@ When adding new Ruby or Rails versions:
 ## Expected Behavior
 
 - Docker image builds successfully with correct Rails version
-- Bundle install completes without errors in target-gem mode
+- Bundle install completes without errors in target-gem mode (with caching)
 - Tests run with proper framework (RSpec or Rails test)
 - Database containers start and tests can connect
 - Test output streams in real-time
 - Proper exit codes returned (0 for success, non-zero for failure)
 - Cleanup happens reliably (database containers stopped)
+- **Caching works:** Subsequent runs use cached Docker layers (~1.5s vs 2+ min)
 
 ## License
 

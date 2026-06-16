@@ -12,9 +12,9 @@ The self-test script discovers gemfiles automatically and tests each with Ruby v
 
 ## Version Policy
 
-- Use latest patch of each major.minor (e.g., Rails 8.0.4)
-- Pin dependencies minimally - only when needed to resolve conflicts
-- Mark unsupported combinations (e.g., Rails 6.0/6.1 have Logger bugs)
+- Target each Rails minor with a pessimistic constraint (e.g. `gem 'rails', '~> 8.0.0'`) so Bundler resolves the latest stable patch; Ruby uses the `ruby:X.Y` image for the same reason. No exact patch versions are pinned.
+- Pin other dependencies only when needed to resolve a conflict (e.g. `minitest ~> 5.27` for Rails 7.0/7.1) — the exception, not the rule.
+- Mark unsupported combinations (e.g., Rails 6.0/6.1 have Logger bugs).
 
 ## Adding New Rails Versions
 
