@@ -1,16 +1,18 @@
+# frozen_string_literal: true
+
 # Rails 6.1 - UNSUPPORTED
 #
 # Rails 6.1.x has similar Logger compatibility issues as 6.0
 # Cannot find working Ruby version following our policy.
 
-source "https://rubygems.org"
+source 'https://rubygems.org'
 
-gem "rails", "~> 6.1.7"  # Latest 6.1.x (broken with modern Ruby)
+gem 'rails', '~> 6.1.7' # Latest 6.1.x (broken with modern Ruby)
 
-gem "sqlite3", "~> 1.4.0"
-gem "nokogiri", "~> 1.13.0"
-gem "rspec-rails", "~> 5.1"
+gem 'nokogiri', '~> 1.13.0'
+gem 'rspec-rails', '~> 5.1'
+gem 'sqlite3', '~> 1.4.0'
 
 group :development, :test do
-  gem "byebug"
+  gem 'byebug'
 end

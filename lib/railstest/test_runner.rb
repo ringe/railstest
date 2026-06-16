@@ -1,3 +1,6 @@
+# frozen_string_literal: true
+
+require 'English'
 module Railstest
   class TestRunner
     attr_reader :options, :docker_manager, :database_manager
@@ -25,7 +28,7 @@ module Railstest
       begin
         database_manager.setup_database(docker_manager)
         exit_status = run_tests
-        return exit_status
+        exit_status
       ensure
         database_manager.stop
       end
@@ -41,8 +44,8 @@ module Railstest
                  end
 
       # Check for test or spec directories
-      test_dir = File.join(gem_path, "test")
-      spec_dir = File.join(gem_path, "spec")
+      test_dir = File.join(gem_path, 'test')
+      spec_dir = File.join(gem_path, 'spec')
 
       has_test_dir = File.directory?(test_dir)
       has_spec_dir = File.directory?(spec_dir)
@@ -59,27 +62,27 @@ module Railstest
 
       # Check if the directories actually contain test files
       test_files = []
-      test_files += Dir.glob(File.join(test_dir, "**/*_test.rb")) if has_test_dir
-      test_files += Dir.glob(File.join(spec_dir, "**/*_spec.rb")) if has_spec_dir
+      test_files += Dir.glob(File.join(test_dir, '**/*_test.rb')) if has_test_dir
+      test_files += Dir.glob(File.join(spec_dir, '**/*_spec.rb')) if has_spec_dir
 
-      if test_files.empty?
-        raise Railstest::Error, <<~ERROR
-          No test files found in gem.
+      return unless test_files.empty?
 
-          Found directories:
-          #{has_test_dir ? "  - test/" : ""}
-          #{has_spec_dir ? "  - spec/" : ""}
+      raise Railstest::Error, <<~ERROR
+        No test files found in gem.
 
-          But no test files (*_test.rb or *_spec.rb) were found.
+        Found directories:
+        #{has_test_dir ? '  - test/' : ''}
+        #{has_spec_dir ? '  - spec/' : ''}
 
-          Gem path: #{gem_path}
-        ERROR
-      end
+        But no test files (*_test.rb or *_spec.rb) were found.
+
+        Gem path: #{gem_path}
+      ERROR
     end
 
     def setup_signal_handlers
       # Trap SIGINT (Ctrl+C) and SIGTERM to ensure cleanup
-      ['INT', 'TERM'].each do |signal|
+      %w[INT TERM].each do |signal|
         Signal.trap(signal) do
           puts "\n\nInterrupted! Cleaning up..."
           database_manager.stop
@@ -96,40 +99,38 @@ module Railstest
 
       # Use IO.popen to stream output in real-time
       # Read in chunks to show test dots as they appear (not line-buffered)
-      IO.popen(command, err: [:child, :out]) do |io|
+      IO.popen(command, err: %i[child out]) do |io|
         loop do
-          begin
-            chunk = io.readpartial(1024)
-            print chunk
-            $stdout.flush
-          rescue EOFError
-            break
-          end
+          chunk = io.readpartial(1024)
+          print chunk
+          $stdout.flush
+        rescue EOFError
+          break
         end
       end
 
-      $?.exitstatus
+      $CHILD_STATUS.exitstatus
     end
 
     def detect_test_framework
       # Check for spec directory
       if docker_manager.target_gem_mode?
         gem_path = docker_manager.expanded_gem_path
-        return :rspec if File.directory?(File.join(gem_path, "spec"))
-        return :rails_test if File.directory?(File.join(gem_path, "test"))
+        return :rspec if File.directory?(File.join(gem_path, 'spec'))
+        return :rails_test if File.directory?(File.join(gem_path, 'test'))
 
         # Check Gemfile for rspec
-        gemfile_path = File.join(gem_path, "Gemfile")
+        gemfile_path = File.join(gem_path, 'Gemfile')
         if File.exist?(gemfile_path)
           gemfile_content = File.read(gemfile_path)
           return :rspec if gemfile_content =~ /gem\s+['"]rspec/
         end
       else
-        return :rspec if File.directory?("spec")
-        return :rails_test if File.directory?("test")
+        return :rspec if File.directory?('spec')
+        return :rails_test if File.directory?('test')
 
-        if File.exist?("Gemfile")
-          gemfile_content = File.read("Gemfile")
+        if File.exist?('Gemfile')
+          gemfile_content = File.read('Gemfile')
           return :rspec if gemfile_content =~ /gem\s+['"]rspec/
         end
       end
@@ -139,32 +140,37 @@ module Railstest
     end
 
     def build_test_command(test_framework)
-      cmd = ["docker", "run", "--rm", "--network=host"]
+      cmd = ['docker', 'run', '--rm', '--network=host']
 
       # Environment variables
-      cmd << "-e" << "DATABASE=#{options[:database]}"
-      cmd << "-e" << "TARGET_DB=#{options[:database]}"
-      cmd << "-e" << "RAILS_ENV=test"
+      cmd << '-e' << "DATABASE=#{options[:database]}"
+      cmd << '-e' << "TARGET_DB=#{options[:database]}"
+      cmd << '-e' << 'RAILS_ENV=test'
 
       # Volume mounts and working directory for target gem mode
       if docker_manager.target_gem_mode?
-        cmd << "-v" << "#{docker_manager.expanded_gem_path}:/app/target_gem"
-        cmd << "-w" << "/app/test_app"
+        has_dummy_app = File.exist?(File.join(docker_manager.expanded_gem_path, 'test/dummy/config/environment.rb'))
+
+        if has_dummy_app
+          # Rails engine: already baked into image via COPY during build - no volume mount needed
+        else
+          # Regular app: use target-gem volume mount
+          cmd << '-v' << "#{docker_manager.expanded_gem_path}:/app/target_gem"
+        end
+        cmd << '-w' << '/app/test_app'
       else
         # Local mode: use actual gemfile found in gemfiles/
         gemfile = docker_manager.find_gemfile_for_version
-        cmd << "-e" << "BUNDLE_GEMFILE=/app/gemfiles/#{gemfile}"
-        cmd << "-w" << "/app"
+        cmd << '-e' << "BUNDLE_GEMFILE=/app/gemfiles/#{gemfile}"
+        cmd << '-w' << '/app'
       end
 
       cmd << docker_manager.image_name
 
-      # In target-gem mode, run bundle install first, then tests
-      # Use bash -c to chain commands in a single container execution
+      # In target-gem mode, bundle is already installed during Docker build
       if docker_manager.target_gem_mode?
-        puts "Installing gem dependencies..."
         test_cmd = build_test_subcommand(test_framework)
-        cmd << "bash" << "-c" << "bundle install && #{test_cmd}"
+        cmd << 'bash' << '-c' << test_cmd.to_s
       else
         # Local mode - bundle already installed during build
         cmd.concat(build_test_subcommand_array(test_framework))
@@ -175,13 +181,24 @@ module Railstest
 
     def build_test_subcommand(test_framework)
       # Returns a shell command string for target-gem mode
+      has_dummy_app = File.exist?(File.join(docker_manager.expanded_gem_path, 'test/dummy/config/environment.rb'))
+
       case test_framework
       when :rspec
-        test_path = options[:test_path] ? remap_path_for_container(options[:test_path]) : "/app/target_gem/spec"
+        test_path = if has_dummy_app
+                      options[:test_path] ? remap_path_for_container(options[:test_path]) : '/app/test_app/spec'
+                    else
+                      options[:test_path] ? remap_path_for_container(options[:test_path]) : '/app/target_gem/spec'
+                    end
         "bundle exec rspec #{test_path}"
       when :rails_test
-        test_path = options[:test_path] ? remap_path_for_container(options[:test_path]) : "/app/target_gem/test"
-        "bin/rails test #{test_path}"
+        if has_dummy_app
+          # Rails engine: just run bin/rails test (discovers tests in dummy app)
+          options[:test_path] ? "bin/rails test #{remap_path_for_container(options[:test_path])}" : 'bin/rails test'
+        else
+          test_path = options[:test_path] ? remap_path_for_container(options[:test_path]) : '/app/target_gem/test'
+          "bin/rails test #{test_path}"
+        end
       end
     end
 
@@ -189,16 +206,16 @@ module Railstest
       # Returns an array of command parts for local mode
       case test_framework
       when :rspec
-        cmd = ["bundle", "exec", "rspec"]
+        cmd = %w[bundle exec rspec]
         cmd << options[:test_path] if options[:test_path]
         cmd
       when :rails_test
         # Check if bin/rails exists, otherwise use bundle exec rails
-        if File.exist?("bin/rails")
-          cmd = ["bin/rails", "test"]
-        else
-          cmd = ["bundle", "exec", "rails", "test"]
-        end
+        cmd = if File.exist?('bin/rails')
+                ['bin/rails', 'test']
+              else
+                %w[bundle exec rails test]
+              end
         cmd << options[:test_path] if options[:test_path]
         cmd
       end
@@ -210,7 +227,7 @@ module Railstest
 
       # Always interpret as relative to gem root for consistency
       # Remove leading slash if present to treat as relative
-      clean_path = path.start_with?('/') ? path[1..-1] : path
+      clean_path = path.start_with?('/') ? path[1..] : path
 
       "/app/target_gem/#{clean_path}"
     end

@@ -1,11 +1,13 @@
-require "test_helper"
+# frozen_string_literal: true
+
+require 'test_helper'
 
 class SimpleTest < ActiveSupport::TestCase
-  test "truth" do
+  test 'truth' do
     assert true
   end
 
-  test "Rails is loaded" do
+  test 'Rails is loaded' do
     assert defined?(Rails)
     assert Rails.version.present?
   end

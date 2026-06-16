@@ -1,17 +1,19 @@
+# frozen_string_literal: true
+
 # Rails 8.0 - Latest 8.0.x
 # Ruby: >= 3.2
 
-source "https://rubygems.org"
+source 'https://rubygems.org'
 
-gem "rails", "~> 8.0.0"
-gem "sqlite3", "~> 2.1"
+gem 'rails', '~> 8.0.0'
+gem 'sqlite3', '~> 2.1'
 
 # Pin nokogiri
-gem "nokogiri", "~> 1.17.0"
+gem 'nokogiri', '~> 1.17.0'
 
 # Test framework
-gem "rspec-rails", "~> 7.1"
+gem 'rspec-rails', '~> 7.1'
 
 group :development, :test do
-  gem "debug"
+  gem 'debug'
 end
