@@ -4,22 +4,25 @@ A Docker-based CLI tool for testing Ruby gems. Runs tests on various Ruby, Rails
 
 ## Features
 
-- **Auto-detects Ruby and Rails versions** from `.ruby-version`, `Gemfile`, or gemspec (supports any version operator: `~>`, `>=`, etc.)
+- **Tests all compatible combinations by default** — runs every Ruby/Rails combination from the built-in matrix; use `-j N` to parallelise
+- **Single-combination mode** — specify both `--ruby` and `--rails` for fast one-off runs during active development
+- **`--gemspec`** — instantly shows which combinations your gemspec claims to support, no Docker required
 - **Two testing modes**: Local (for gems with `gemfiles/`) and Target-Gem (bakes gem into Docker image)
 - **Rails engine support**: Automatically detects Rails engines with dummy apps and tests them correctly
 - **Gem caching**: All dependencies cached in Docker layers for fast subsequent runs (~1.5s vs 2+ min)
-- **Compatibility warnings**: Alerts you about known incompatible version combinations
 - **Multiple databases**: SQLite, MySQL, and PostgreSQL support (automatically configured)
 - **Test framework detection**: Automatically detects RSpec or Rails test
 - **Docker isolation**: Reproducible tests in clean environments
 - **Zero runtime dependencies**: Just Docker required
 
 ### CLI Options
-- `--ruby VERSION` - Specify Ruby version (auto-detected from `.ruby-version` or gemspec)
-- `--rails VERSION` - Specify Rails version, accepts 7.1 or 7_1 format (auto-detected from Gemfile/gemspec)
-- `--db DATABASE` - Choose database: sqlite, mysql, postgres (default: sqlite)
+- `--ruby VERSION` - Filter to one Ruby version (or pin when combined with `--rails`)
+- `--rails VERSION` - Filter to one Rails version (or pin when combined with `--ruby`), accepts 7.1 or 7_1 format
+- `--db DATABASE` - Database: sqlite, mysql, postgres (default: sqlite)
 - `--path PATH` - Run specific test file or directory
-- `--gem-path PATH` - Enable target-gem mode for external gems
+- `--gem-path PATH` - Path to the gem to test
+- `--gemspec` - Show which combinations the gemspec claims to support (no Docker required)
+- `-j N` / `--workers N` - Parallel workers when testing multiple combinations (default: 1, sequential)
 - `--version` - Show version
 - `--help` - Show help
 
@@ -37,109 +40,128 @@ gem "railstest"
 
 ## Usage
 
-Railstest supports two modes depending on your gem's structure:
+### How `--ruby` and `--rails` work
 
-### Testing Modes
+These flags have different meanings depending on how many you supply:
 
-**Local Mode** - For gems with a `gemfiles/` directory (like solid_queue, devise):
-```bash
-cd your-gem
-railstest              # Auto-detects versions from .ruby-version and gemfiles/
-```
+| Command | Behaviour |
+|---------|-----------|
+| `railstest --gem-path .` | Tests all 18 compatible combinations sequentially |
+| `railstest --gem-path . -j 4` | Same, 4 combinations at a time |
+| `railstest --gem-path . --ruby 4.0` | All compatible Rails versions for Ruby 4.0 |
+| `railstest --gem-path . --rails 8.1` | All compatible Ruby versions for Rails 8.1 |
+| `railstest --gem-path . --ruby 4.0 --rails 8.1` | That one combination only |
 
-**Target-Gem Mode** - For simple gems without `gemfiles/` directory:
-```bash
-railstest --gem-path /path/to/gem --ruby 4.0 --rails 8.1
-```
+Both together is single-combination mode — useful for fast iteration while fixing a specific failure. Either alone (or neither) runs the full matrix or a filtered slice of it.
 
-### Basic Commands
-
-```bash
-# Show help
-railstest --help
-
-# Show version
-railstest --version
-```
-
-### Target-Gem Mode Examples
-
-When versions can be auto-detected (from Gemfile or gemspec):
+### Testing all combinations
 
 ```bash
-railstest --gem-path /path/to/your/gem
+# Sequential — safe default, clear output
+railstest --gem-path .
+
+# 4 parallel workers — faster on a capable machine
+railstest --gem-path . -j 4
+
+# All Rails versions for one Ruby
+railstest --gem-path . --ruby 4.0
+
+# All Ruby versions for one Rails
+railstest --gem-path . --rails 8.1
 ```
 
-When you need to specify versions explicitly:
+Output shows each result as it finishes, with failure output collected at the end:
+
+```
+Railstest testing spina against 18 combinations sequentially...
+
+  ✅ Ruby 3.2 + Rails 7.0 (124s)
+  ✅ Ruby 3.2 + Rails 7.1 (38s)
+  ❌ Ruby 4.0 + Rails 8.1 (52s)
+  ...
+
+Failed combinations:
+
+  ❌ Ruby 4.0 + Rails 8.1
+    [output from that run]
+
+══════════════════════════════════════════════════
+17/18 combinations passed
+```
+
+### Single-combination mode
+
+Specify both `--ruby` and `--rails` to test exactly one combination. Output streams in real-time, useful when actively fixing a failure:
 
 ```bash
-railstest --gem-path /path/to/your/gem --ruby 3.3 --rails 7.1
+railstest --gem-path . --ruby 3.2 --rails 8.1
+railstest --gem-path . --ruby 3.2 --rails 8.1 --db postgres
+railstest --gem-path . --ruby 3.2 --rails 8.1 --path test/models/user_test.rb
 ```
 
-Test with specific Ruby and Rails versions:
+### Inspecting gemspec support claims
+
+`--gemspec` reads your gem's declared version constraints and shows which combinations from the railstest matrix fall in scope — no Docker required:
 
 ```bash
-railstest --ruby 3.2 --rails 7.0 --gem-path /path/to/gem
+railstest --gem-path . --gemspec
 ```
 
-Test with PostgreSQL:
+```
+spina — declared support (gemspec)
+══════════════════════════════════════════════════
 
-```bash
-railstest --db postgres --gem-path /path/to/gem
+  ruby   >= 2.7.0  →  railstest tests >= 3.2 (zeitwerk requires Ruby >= 3.2)
+  rails  >= 7.0, < 9.0
+
+        7.0   7.1   7.2   8.0   8.1
+  ──────────────────────────────────
+  4.0         ✓     ✓     ✓     ✓
+  3.4         ✓     ✓     ✓     ✓
+  3.3   ✓     ✓     ✓     ✓     ✓
+  3.2   ✓     ✓     ✓     ✓     ✓
+
+  18 combinations in scope.
+  Run 'railstest --gem-path .' to test them.
 ```
 
-Test with MySQL:
-
-```bash
-railstest --db mysql --gem-path /path/to/gem
-```
-
-Test specific file:
-
-```bash
-railstest --path test/models/user_test.rb --gem-path /path/to/gem
-```
+`✓` = in scope. `·` = in the railstest matrix but excluded by the gemspec's own constraints (e.g. if the gemspec declares `rails ~> 8.1`, all 7.x columns show `·`).
 
 ### Rails Engine Support
 
-Railstest automatically detects Rails engines (gems with `test/dummy/config/environment.rb`) and tests them correctly without volume mounting:
+Railstest automatically detects Rails engines (gems with `test/dummy/config/environment.rb`) and tests them correctly without volume mounting. Just point it at the engine:
 
 ```bash
-cd your-rails-engine
-railstest              # Auto-detects versions and runs engine tests
-railstest --ruby 3.2   # Specify Ruby if not detected
+railstest --gem-path .                          # all combinations
+railstest --gem-path . --ruby 3.2 --rails 8.1  # single combination
 ```
 
-### Local Mode Examples
+### Local Mode
 
-For gems with their own test infrastructure:
+For gems with a `gemfiles/` directory (like railstest itself):
 
 ```bash
 cd your-gem
-railstest                              # Auto-detects Ruby and Rails versions
-railstest --rails 7.0                  # Test with different Rails version
-railstest --ruby 3.2 --rails 7.0       # Override both versions
-railstest --db postgres                # Use PostgreSQL instead of SQLite
-railstest --path test/specific_test.rb # Run specific test file
+railstest --ruby 3.2 --rails 7.0       # single combination
+railstest --ruby 3.2 --rails 7.0 --db postgres
+railstest --ruby 3.2 --rails 7.0 --path test/specific_test.rb
 ```
 
-### Version Auto-Detection
+### Version resolution (single-combination mode only)
 
-**Ruby version** (in order of precedence):
+When both `--ruby` and `--rails` are given, railstest uses them directly. When only one is given, the other is resolved in this order:
+
+**Ruby** (when `--ruby` is omitted):
 1. `.ruby-version` file
-2. `required_ruby_version` from gemspec (if >= 2.7 or ~> constraint)
-3. Falls back to requiring `--ruby` flag with helpful hints for Rails 8+
+2. `required_ruby_version` in gemspec
+3. Clamped to 3.2 if below (zeitwerk requires Ruby >= 3.2)
 
-**Rails version** (in order of precedence):
-1. Newest version in `gemfiles/` directory (for local mode)
+**Rails** (when `--rails` is omitted):
+1. Newest version in `gemfiles/` directory
 2. Rails dependency in `Gemfile`
-3. Rails dependency in gemspec (supports any operator: `~>`, `>=`, etc.)
-4. Falls back to requiring `--rails` flag
+3. Rails dependency in gemspec
 
-**Notes:**
-- Versions < 2.7 (Ruby) or < 7.0 (Rails) require manual specification
-- The tool warns about known incompatible combinations
-- Rails 8+ automatically suggests Ruby 3.1+ when not specified
+In multi-combination mode (`--ruby` and `--rails` not both given), versions come from the built-in compatibility matrix — auto-detection is not used.
 
 ## Requirements
 
@@ -172,7 +194,7 @@ Railstest tests itself using these combinations (see `gemfiles/`):
 
 ### Supported Ruby and Rails Versions
 
-Railstest can test with **any** Ruby version that builds in Docker (typically 2.5+) and any Rails version from 5.0+. The tool doesn't restrict which combinations you can use - it provides the Docker environment to run them.
+Railstest can test with **any** Ruby version that builds in Docker. Ruby 3.2+ is required for modern Rails (zeitwerk dependency). For Rails, any version from 7.0+ is supported; older versions may work but are not guaranteed.
 
 ## How It Works
 
@@ -207,7 +229,7 @@ Error: Ruby version not specified and could not be detected
 Rails 8.0 requires Ruby 3.1+
   Use --ruby 3.2 or later
 ```
-**Solution:** Add a `.ruby-version` file or use `--ruby VERSION` flag (Rails 8+ needs Ruby 3.1+)
+**Solution:** Add a `.ruby-version` file or use `--ruby VERSION` flag. Rails 7.0+ requires Ruby 3.2+ (zeitwerk dependency).
 
 ### "Local mode requires a 'gemfiles/' directory" error
 **Solution:** This gem should use target-gem mode:
@@ -222,8 +244,8 @@ railstest --gem-path . --ruby 3.3 --rails 7.1
 ```
 **This is informational** - the tool will still attempt to run, but the build may fail. Use the recommended Rails versions for your Ruby version.
 
-### Docker build fails with old Ruby versions
-Ruby < 2.5 uses EOL operating systems with broken package repositories. Use Ruby 2.5+ for reliable Docker builds.
+### Docker build fails installing Rails on older Ruby
+Modern Rails pulls in zeitwerk, which requires Ruby >= 3.2. If you see a zeitwerk version error during `gem install rails`, railstest has auto-detected a Ruby version that is too old. Override with `--ruby 3.2` or add a `.ruby-version` file.
 
 ### Tests can't find gems after first run
 If you see `GemNotFound` errors, ensure all required gems are in your Gemfile and that the Docker build completed successfully. The tool caches all dependencies, so if a gem is missing from your Gemfile it won't be available at runtime.
@@ -237,14 +259,13 @@ gem build railstest.gemspec
 # Install locally
 gem install railstest-0.2.0.gem
 
-# Test it with caching (first run builds image, subsequent runs are fast)
+# Test against a gem — all combinations, or pin both for a quick smoke test
 cd /path/to/test-gem
-railstest --gem-path . --ruby 3.2
+railstest --gem-path .
+railstest --gem-path . --ruby 3.2 --rails 8.1
 ```
 
 ### Testing Changes to Railstest
-
-Test your changes against a gem:
 
 ```bash
 # Build and install from current directory
@@ -252,12 +273,12 @@ cd railstest
 gem build railstest.gemspec
 gem uninstall railstest -a && gem install railstest-0.2.0.gem
 
-# Test against active_canvas (Rails engine)
-cd ../active_canvas
-railstest --gem-path . --ruby 3.2
+# Test against a gem — run all combinations or narrow down while iterating
+cd ../your-gem
+railstest --gem-path .                         # full matrix
+railstest --gem-path . --ruby 3.2 --rails 8.1 # fast single run
 
-# First run: ~2 minutes (builds Docker image with all gems cached)
-# Second run: ~1.5 seconds (uses cached layers)
+# First build: ~2 minutes. Subsequent runs use cached Docker layers (~1.5s).
 ```
 
 ### Caching Behavior
@@ -271,12 +292,13 @@ railstest --gem-path . --ruby 3.2
 Railstest tests itself using the `gemfiles/` directory:
 
 ```bash
-./run_self_test.sh                    # Stop on first failure
-./run_self_test.sh --continue-on-error # Test all combinations
-./run_self_test.sh -i                 # Interactive mode
+./run_self_test.sh          # All combinations in parallel (all CPU cores)
+./run_self_test.sh -j4      # 4 parallel workers
+./run_self_test.sh -j1      # Sequential
+./run_self_test.sh -i       # Interactive mode (sequential, prompt between tests)
 ```
 
-The test discovers gemfiles automatically and tests each with Ruby versions listed in `gemfiles/ruby-versions`.
+The test discovers gemfiles automatically and tests each Ruby/Rails combination from `gemfiles/ruby-versions`, skipping any excluded by the compatibility matrix.
 
 ### Performance Note
 
@@ -287,12 +309,10 @@ With caching enabled, self-tests run significantly faster:
 ## Contributing
 
 When adding new Ruby or Rails versions:
-1. Create a new gemfile in `gemfiles/` with pinned versions
-2. Test with `./run_self_test.sh`
-3. Update `lib/railstest/supported_versions.rb` after verification
-4. Update the compatibility matrix in this README
-5. Update the "Last updated" date
-6. See `VERSION_COMPATIBILITY.md` for details
+1. Add the Ruby version to `gemfiles/ruby-versions` and/or create a new `gemfiles/rails_X.Y.gemfile`
+2. Update the compatibility matrix in `lib/railstest/supported_versions.rb`
+3. Test with `./run_self_test.sh`
+4. Update the self-test matrix table in this README
 
 ## Expected Behavior
 
